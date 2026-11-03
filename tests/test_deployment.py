@@ -1,11 +1,14 @@
 """Offline deployment failure checks; no production Docker daemon is accessed."""
 import json
+import os
 import shutil
+import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from scripts import deploy as deployment
 
@@ -180,6 +183,102 @@ class DeploymentTests(unittest.TestCase):
             self.run_deploy(docker)
         self.assertFalse((self.state / 'current.json').exists())
         self.assertNotIn('resume', docker.events)
+
+    def test_existing_writable_state_needs_no_privileged_preparation(self):
+        docker = Mock()
+        result = deployment.prepare_state_dir(self.state, self.bundle, REVISION, docker)
+        self.assertEqual(result, self.state.resolve())
+        self.assertEqual(docker.mock_calls, [])
+
+    def test_missing_custom_directory_is_not_created_or_sent_to_docker(self):
+        docker = Mock()
+        target = self.base / 'missing'
+        with self.assertRaisesRegex(ValueError, 'production location|supports /srv/studioflow only'):
+            deployment.prepare_state_dir(target, self.bundle, REVISION, docker)
+        self.assertFalse(target.exists())
+        self.assertEqual(docker.mock_calls, [])
+
+    def prepare_missing_production_state(self, docker):
+        state = Path('/srv/studioflow')
+        with patch.object(deployment, 'validate_state_path', return_value=state), \
+                patch.object(deployment, 'validate_state_dir', return_value=state), \
+                patch.object(Path, 'is_dir', lambda path: path == Path('/srv')), \
+                patch.object(Path, 'is_symlink', return_value=False), \
+                patch.object(os, 'getuid', return_value=1234, create=True), \
+                patch.object(os, 'getgid', return_value=5678, create=True):
+            return deployment.prepare_state_dir(state, self.bundle, REVISION, docker)
+
+    def test_bootstrap_verifies_bundle_and_image_before_preparing_fixed_directory(self):
+        docker = Mock(image='studioflow:' + REVISION)
+        self.prepare_missing_production_state(docker)
+        self.assertEqual([call[0] for call in docker.method_calls], ['current', 'load', 'command'])
+        args = docker.command.call_args.args
+        self.assertEqual(args[:7], ('run', '--rm', '--network', 'none', '--read-only', '--user', '0:0'))
+        self.assertIn('type=bind,source=/srv,target=/host-srv', args)
+        self.assertEqual(args[-4:], (deployment.PREPARE_STATE, '/host-srv', '1234', '5678'))
+
+    def test_bootstrap_rejects_tampered_bundle_before_any_docker_operation(self):
+        (self.bundle / 'deploy.py').write_bytes(b'tampered')
+        docker = Mock()
+        with self.assertRaisesRegex(ValueError, 'checksum'):
+            self.prepare_missing_production_state(docker)
+        self.assertEqual(docker.mock_calls, [])
+
+    def test_bootstrap_failure_cannot_stop_existing_container(self):
+        docker = Mock(image='studioflow:' + REVISION)
+        docker.command.side_effect = RuntimeError('Simulated Docker permission failure')
+        with self.assertRaisesRegex(RuntimeError, 'permission failure'):
+            self.prepare_missing_production_state(docker)
+        docker.stop.assert_not_called()
+
+
+@unittest.skipUnless(os.name == 'posix', 'Linux directory-descriptor checks run in CI')
+class StateDirectoryHelperTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='studioflow-state-test-')
+        self.addCleanup(temporary.cleanup)
+        self.parent = Path(temporary.name)
+        self.state = self.parent / 'studioflow'
+
+    def prepare(self):
+        with patch.object(sys, 'argv', ['prepare', str(self.parent), str(os.getuid()), str(os.getgid())]):
+            exec(compile(deployment.PREPARE_STATE, '<prepare-state>', 'exec'), {})
+
+    def test_creates_private_directory_owned_by_runner(self):
+        self.prepare()
+        info = self.state.stat()
+        self.assertEqual(stat.S_IMODE(info.st_mode), 0o700)
+        self.assertEqual((info.st_uid, info.st_gid), (os.getuid(), os.getgid()))
+
+    def test_repeated_preparation_preserves_workspace_contents_and_child_permissions(self):
+        self.state.mkdir(mode=0o755)
+        data = self.state / 'studio.sqlite3'
+        data.write_bytes(b'existing workspace')
+        data.chmod(0o640)
+        before = data.stat()
+        self.prepare()
+        self.prepare()
+        self.assertEqual(data.read_bytes(), b'existing workspace')
+        self.assertEqual((data.stat().st_mode, data.stat().st_uid, data.stat().st_gid),
+                         (before.st_mode, before.st_uid, before.st_gid))
+        self.assertEqual(stat.S_IMODE(self.state.stat().st_mode), 0o700)
+
+    def test_rejects_directory_symlink_without_changing_target(self):
+        outside = self.parent / 'outside'
+        outside.mkdir(mode=0o755)
+        self.state.symlink_to(outside, target_is_directory=True)
+        before = outside.stat()
+        with self.assertRaises(OSError):
+            self.prepare()
+        self.assertEqual(outside.stat().st_mode, before.st_mode)
+
+    def test_rejects_directory_owned_by_an_unrelated_account(self):
+        self.state.mkdir()
+        with patch.object(os, 'fstat', return_value=SimpleNamespace(st_uid=os.getuid() + 1)), \
+                patch.object(os, 'fchown') as change_owner:
+            with self.assertRaisesRegex(RuntimeError, 'another account'):
+                self.prepare()
+        change_owner.assert_not_called()
 
 
 if __name__ == '__main__':

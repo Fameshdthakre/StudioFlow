@@ -38,6 +38,29 @@ for directory,dirs,files in os.walk('/workspace',followlinks=False):
 """
 
 
+# Operate through directory descriptors so symlinks cannot redirect changes.
+PREPARE_STATE = """import os,sys
+parent,uid,gid=sys.argv[1],int(sys.argv[2]),int(sys.argv[3])
+flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW
+parent_fd=os.open(parent,flags)
+try:
+    try:
+        os.mkdir('studioflow',mode=0o700,dir_fd=parent_fd)
+    except FileExistsError:
+        pass
+    target=os.open('studioflow',flags,dir_fd=parent_fd)
+    try:
+        if os.fstat(target).st_uid not in (0,uid):
+            raise RuntimeError('Deployment directory belongs to another account; ask the host administrator to check it')
+        os.fchown(target,uid,gid)
+        os.fchmod(target,0o700)
+    finally:
+        os.close(target)
+finally:
+    os.close(parent_fd)
+"""
+
+
 def digest(path):
     value = hashlib.sha256()
     with Path(path).open('rb') as stream:
@@ -57,19 +80,42 @@ def verify_bundle(bundle, revision):
             raise ValueError('Deployment bundle checksum mismatch: ' + name)
 
 
-def validate_state_dir(state, workspace=None, runner_temp=None):
+def validate_state_path(state, workspace=None, runner_temp=None):
     if not state.is_absolute() or state.is_symlink() or state.resolve() == Path(state.anchor):
         raise ValueError('Use an absolute, dedicated deployment directory')
     state = state.resolve()
     for location in (workspace, runner_temp):
         if location and state.is_relative_to(Path(location).resolve()):
             raise ValueError('Production data must be outside checkout and runner temporary directories')
-    if not state.is_dir() or not os.access(state, os.W_OK):
-        raise ValueError('Create /srv/studioflow with mode 700 and ownership matching the runner service account first')
+    return state
+
+
+def validate_state_dir(state, workspace=None, runner_temp=None):
+    state = validate_state_path(state, workspace, runner_temp)
+    if not state.is_dir() or not os.access(state, os.W_OK | os.X_OK):
+        raise ValueError('Deployment directory is not writable by the runner; check /srv/studioflow ownership and permissions')
     for name in ('data', 'releases', 'backups', '.env', 'current.json', '.deploy.lock'):
         if (state / name).is_symlink():
             raise ValueError('Deployment paths must not be symbolic links: ' + name)
     return state
+
+
+def prepare_state_dir(state, bundle, revision, docker, workspace=None, runner_temp=None):
+    state = validate_state_path(state, workspace, runner_temp)
+    if state.is_dir() and os.access(state, os.W_OK | os.X_OK):
+        return validate_state_dir(state, workspace, runner_temp)
+    # Bootstrap only the production location, never arbitrary --state-dir paths.
+    if state != Path('/srv/studioflow') or not Path('/srv').is_dir() or Path('/srv').is_symlink():
+        raise ValueError('Automatic initialization supports /srv/studioflow only; provision other state directories manually')
+    verify_bundle(bundle, revision)
+    docker.current()  # Reject remote Docker contexts before mounting /srv.
+    docker.load(bundle, revision)
+    print('Preparing /srv/studioflow for the runner service account')
+    docker.command('run', '--rm', '--network', 'none', '--read-only', '--user', '0:0',
+                   '--mount', 'type=bind,source=/srv,target=/host-srv',
+                   '--entrypoint', 'python', docker.image, '-c', PREPARE_STATE,
+                   '/host-srv', str(os.getuid()), str(os.getgid()))
+    return validate_state_dir(state, workspace, runner_temp)
 
 
 def private_file(path, contents):
@@ -236,11 +282,13 @@ def main():
         raise RuntimeError('Production deployment requires the Linux mvserver runner')
     import fcntl
     os.umask(0o077)
-    state = validate_state_dir(args.state_dir, os.environ.get('GITHUB_WORKSPACE'), os.environ.get('RUNNER_TEMP'))
+    docker = Docker('studioflow:' + args.revision)
+    state = prepare_state_dir(args.state_dir, args.bundle.resolve(), args.revision, docker,
+                              os.environ.get('GITHUB_WORKSPACE'), os.environ.get('RUNNER_TEMP'))
     with (state / '.deploy.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         deploy(args.bundle.resolve(), state, args.revision, os.environ.get('PROD_ENV_FILE', ''),
-               Docker('studioflow:' + args.revision),
+               docker,
                (lambda: is_current_main(args.revision)) if args.check_main else (lambda: True))
 
 

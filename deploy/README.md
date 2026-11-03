@@ -6,7 +6,7 @@ The workflows deploy a tested Docker image from `main` to the existing Linux `mv
 
 1. Keep the existing runner and add the custom label `studioflow-production`. The workflow also selects `self-hosted`, `linux` and `x64`. Use an Actions runner that supports the pinned Node 24 actions.
 2. Ensure the runner service account can run Python 3 and access the local Docker Engine and Docker Compose v2 (`up --wait` is required). Remote Docker contexts are rejected.
-3. Create the state directory owned by that runner account. Replace the two placeholders with the actual service account and group:
+3. The deployment script initializes a missing `/srv/studioflow` through the verified Docker image, using the runner account's UID/GID and mode `0700`. It can also repair a root-owned directory's top-level permissions. Existing workspace contents are preserved; directories owned by another account or symlink targets are rejected. This requires access to the local Docker daemon, which deployment already needs. To provision the directory manually instead, replace the placeholders below with the runner service account and group:
 
    ```sh
    sudo install -d -m 0700 -o RUNNER_ACCOUNT -g RUNNER_GROUP /srv/studioflow
