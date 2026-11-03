@@ -40,16 +40,17 @@ jobs:
 
       - name: 3. Ensure Storage Directories & Permissions
         run: |
-          echo "Ensuring data directories exist and have proper permissions for container user 10001..."
+          echo "Ensuring data directories exist and have full read/write permissions..."
           mkdir -p data/uploads data/outputs data/brand_logos
-          sudo chown -R 10001:10001 data/ || chown -R 10001:10001 data/ || true
+          chmod -R 777 data/ || true
+          sudo chown -R 10001:10001 data/ 2>/dev/null || true
 
       - name: 4. Build and Recreate StudioFlow Container
         run: |
           echo "Building StudioFlow container image..."
           docker compose build studioflow
           echo "Starting updated container..."
-          docker compose up -d --build --remove-orphans studioflow
+          docker compose up -d --build --force-recreate --remove-orphans studioflow
 
       - name: 5. Verify Service Health
         run: |
