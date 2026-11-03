@@ -1,0 +1,22 @@
+# The deployment script supplies these absolute paths and the tested image tag.
+services:
+  studioflow:
+    image: ${STUDIOFLOW_IMAGE:?Set the tested image tag}
+    container_name: studioflow
+    restart: unless-stopped
+    stop_grace_period: 240s
+    env_file:
+      - ${STUDIOFLOW_ENV_FILE:?Set the private runtime environment file}
+    environment:
+      STUDIOFLOW_REQUIRE_AUTH: '1'
+      ALLOW_ANONYMOUS_DEMO: '0'
+      STUDIOFLOW_LOAD_DOTENV: '0'
+      STUDIOFLOW_DATA_DIR: /app/data
+    ports:
+      - '${STUDIOFLOW_BIND_ADDRESS:-127.0.0.1}:8000:8000'
+    volumes:
+      - type: bind
+        source: ${STUDIOFLOW_DATA_PATH:?Set the permanent data directory}
+        target: /app/data
+        bind:
+          create_host_path: false

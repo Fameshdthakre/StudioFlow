@@ -1,75 +1,56 @@
-name: Deploy StudioFlow (Self-Hosted mvserver)
+name: Deploy StudioFlow to mvserver
 
 on:
   push:
-    branches: ["main"]
-    paths:
-      - "app.py"
-      - "studioflow/**"
-      - "static/**"
-      - "Dockerfile"
-      - "docker-compose.yml"
-      - "requirements.lock"
-      - "requirements.txt"
-      - ".github/workflows/deploy.yml"
+    branches: [main]
   workflow_dispatch:
 
-concurrency:
-  group: production-deploy
-  cancel-in-progress: false
+permissions:
+  contents: read
 
 jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ci.yml
+    with:
+      package_release: true
+
   deploy:
-    runs-on: self-hosted
-
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    # Label the existing mvserver runner; PRs run only on GitHub-hosted runners.
+    runs-on: [self-hosted, linux, x64, studioflow-production]
+    environment: production
+    timeout-minutes: 30
+    concurrency:
+      group: studioflow-production
+      cancel-in-progress: false
     steps:
-      - name: 1. Checkout Latest Code
-        uses: actions/checkout@v4
+      # No checkout here: cleanup must never touch the previous checkout's data.
+      - name: Download the tested image and deployment bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: studioflow-${{ github.sha }}
+          path: ${{ runner.temp }}/studioflow-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: 2. Inject Production Environment
+      - name: Deploy the verified revision
+        shell: bash
         env:
-          PROD_ENV: ${{ secrets.PROD_ENV_FILE || vars.PROD_ENV_FILE }}
+          RELEASE_BUNDLE: ${{ runner.temp }}/studioflow-${{ github.run_id }}-${{ github.run_attempt }}
+          RELEASE_SHA: ${{ github.sha }}
+          STUDIOFLOW_DEPLOY_DIR: /srv/studioflow
+          PROD_ENV_FILE: ${{ secrets.PROD_ENV_FILE }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -z "$PROD_ENV" ]; then
-            echo "::error::GitHub Secret PROD_ENV_FILE is empty or not configured!"
-            exit 1
-          fi
-          printf '%s\n' "$PROD_ENV" > .env
-          chmod 600 .env
-          echo "Production .env successfully generated from GitHub Configuration."
+          set -euo pipefail
+          python3 "$RELEASE_BUNDLE/deploy.py" \
+            --bundle "$RELEASE_BUNDLE" \
+            --state-dir "$STUDIOFLOW_DEPLOY_DIR" \
+            --revision "$RELEASE_SHA" \
+            --check-main
 
-      - name: 3. Ensure Storage Directories & Permissions
-        run: |
-          echo "Ensuring data directories exist and have full read/write permissions..."
-          mkdir -p data/uploads data/outputs data/brand_logos
-          chmod -R 777 data/ || true
-          sudo chown -R 10001:10001 data/ 2>/dev/null || true
-
-      - name: 4. Build and Recreate StudioFlow Container
-        run: |
-          echo "Building StudioFlow container image..."
-          docker compose build studioflow
-          echo "Starting updated container..."
-          docker compose up -d --build --force-recreate --remove-orphans studioflow
-
-      - name: 5. Verify Service Health
-        run: |
-          echo "Waiting for StudioFlow to start and pass healthcheck..."
-          for i in {1..20}; do
-            if curl -sf http://localhost:8000/api/health > /dev/null; then
-              echo ">>> StudioFlow is healthy and responding on http://localhost:8000!"
-              exit 0
-            fi
-            echo "Waiting for healthcheck to pass... ($i/20)"
-            sleep 3
-          done
-
-          echo "::error::Healthcheck failed! Dumping recent container logs:"
-          docker compose logs --tail=100 studioflow
-          exit 1
-
-      - name: 6. Clean Unused Docker Build Layers
-        if: always()
-        run: |
-          docker image prune -f
+      - name: Record deployment result
+        if: success()
+        shell: bash
+        run: echo 'Deployment finished or skipped because a newer main revision exists. Check the deploy step for the outcome.' >> "$GITHUB_STEP_SUMMARY"
 

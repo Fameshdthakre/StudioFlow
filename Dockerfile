@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir -r requirements.lock
 COPY app.py .
 COPY static/ ./static/
 COPY studioflow/ ./studioflow/
+COPY resources/ ./resources/
 
 RUN groupadd --gid 10001 studioflow \
     && useradd --uid 10001 --gid studioflow --no-create-home --shell /usr/sbin/nologin studioflow \

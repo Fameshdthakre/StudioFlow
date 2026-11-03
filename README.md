@@ -33,21 +33,29 @@ Rate cards are versioned and saved on each attempt. Prices use integer microdoll
 
 ## Architecture
 
+The application is organized by feature, with an application factory, API routers, services and browser ES modules. See [the source structure and extension guide](docs/ARCHITECTURE.md).
+
 | Component | Responsibility |
 | --- | --- |
-| `app.py` | Authentication, catalog and memory routes, job submission, prompt composition, review and downloads |
+| `app.py`, `studioflow/application.py` | Compatible Uvicorn entry point, application factory and worker lifecycle |
+| `studioflow/api/` | Request schemas, authentication dependencies, feature routes and HTTP responses |
+| `studioflow/services/` | Catalog, memory, render execution, A+ profiles and usage transactions |
+| `studioflow/workspace.py`, `dependencies.py` | Per-application paths, connections and request authentication |
 | `studioflow/settings.py` | Runtime configuration and explicit demo/authentication rules |
-| `studioflow/database.py` | SQLite connections, transactions and additive migrations |
+| `studioflow/database.py`, `migrations/` | SQLite connections and the existing ordered migrations 1–4 |
 | `studioflow/jobs.py` | Atomic task claiming, worker heartbeats and recovery |
 | `studioflow/submissions.py` | Transactional request deduplication |
 | `studioflow/provider.py` | Model capabilities, image-edit requests and atomic padded exports |
-| `studioflow/aplus.py` | Owner-managed A+ profiles, sanitized logos and frozen profile prompt content |
-| `studioflow/usage.py`, `pricing.py` | Durable receipts, nullable estimates and owner-managed checkpoints |
-| `static/app.js`, `aplus.js`, `usage.js` | Existing workspace and the two focused feature screens |
+| `studioflow/pricing.py` | Versioned provider rates and usage estimates |
+| `static/js/`, `static/css/` | Browser bootstrap, shared helpers, isolated screen controllers and styles |
+| `resources/` | Downloadable catalog CSV template |
+| `deploy/`, `scripts/`, `.github/workflows/` | Production Compose configuration, release tooling and CI/CD |
 
 Jobs and renders are committed with their submission keys. Browser retries reuse the same key after a lost response; changed submissions use a new key. Queued work survives restarts. A running request whose worker disappears is marked failed rather than retried automatically, because its provider-side result and charges may be unknown. The SDK also has automatic retries disabled. Revision corrections become permanent product rules only after approval.
 
 SQLite and its uploads, outputs and logos form one workspace. Persist and back up the whole data directory. The current design targets a shared, single-host team workspace; `MAX_WORKERS` controls provider concurrency per process. Use one application process unless intentionally managing the aggregate provider concurrency.
+
+Once committed and enabled, pull requests run tests and a Docker smoke check on GitHub-hosted runners. Pushes to `main` run the same checks, package the tested image and deploy it on `mvserver`, using `/srv/studioflow` for persistent state. Configure the runner label and production secret described in [the deployment guide](deploy/README.md) before activating the workflow.
 
 ## Feature controls and upgrades
 
@@ -60,7 +68,7 @@ STUDIOFLOW_ENABLE_USAGE=1
 
 Set a flag to `0` and restart to hide its view and disable its API. The A+ flag rejects new A+ submissions and revisions; it does not cancel already accepted work. Disabling the usage dashboard does not disable live-request receipts. Schema migrations still run with either flag disabled.
 
-Migrations 3 and 4 add A+ profiles, `renders.aplus_profile_id`, the usage ledger and the checkpoint table. Existing catalog, memory, sessions and history remain in place. These migrations extend the current app's database; do not replace it with the reference app's database or source tree. See [DOCKER_DEPLOY.md](DOCKER_DEPLOY.md) for backup, restart, rollout and rollback instructions.
+Migrations 3 and 4 add A+ profiles, `renders.aplus_profile_id`, the usage ledger and the checkpoint table. Existing catalog, memory, sessions and history remain in place. These migrations extend the current app's database; do not replace it with the reference app's database or source tree. The source reorganization preserves those migration versions and adds no schema change. See [the deployment guide](deploy/README.md) for backup, rollout and recovery instructions.
 
 ## Verification
 
@@ -69,4 +77,6 @@ Migrations 3 and 4 add A+ profiles, `renders.aplus_profile_id`, the usage ledger
 node --test tests/frontend.test.cjs
 ```
 
-Tests use temporary databases, demo rendering and mocked provider responses. They cover the existing catalog/authentication/queue flows, A+ profile snapshots and revisions, model guards, usage after failed exports, unknown costs, checkpoint boundaries, migration preservation, duplicate submission prevention and delayed browser responses. They do not make paid API calls.
+Use Node 24 for the browser tests, matching CI. No npm install or frontend build step is required for the application or its unit tests.
+
+Tests create independent app instances with temporary databases, demo rendering and mocked provider responses. They cover catalog/authentication/queue flows, A+ snapshots and revisions, model guards, usage after failed exports, unknown costs, checkpoint boundaries, migration preservation, bundled module paths and templates, duplicate submissions and delayed browser responses. They do not make paid API calls.
