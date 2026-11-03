@@ -1,0 +1,33 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# SQLite databases and persistent volumes
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# Build, deploy & compressed archives
+*.zip
+*.tar
+*.tar.gz
+
+# Python build and virtual environment
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.tmp/
+
+# Development & test artifacts
+.pytest_cache/
+.coverage*
+htmlcov/
+tests/__pycache__/
+
+# Reference documents and backups
+References/
+*.bak

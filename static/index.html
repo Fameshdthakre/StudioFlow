@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#f7f9fc"><title>StudioFlow — Amazon Image Production</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>
+<div class="app-shell">
+  <aside class="side">
+    <div class="brand"><div class="brand-icon">✦</div><div><b>StudioFlow</b><span>Product image workspace</span></div></div>
+    <div class="nav-head">WORKSPACE</div>
+    <button class="nav-item active" id="nav-create"><span>▦</span> Create images</button>
+    <button class="nav-item" id="nav-catalog"><span>▤</span> Product catalog <span class="nav-count" id="catalog-count">0</span></button>
+    <button class="nav-item" id="nav-gallery"><span>▧</span> Image library <span class="nav-count" id="library-count">0</span></button>
+    <button class="nav-item" id="nav-jobs"><span>◷</span> Production queue</button>
+    <button class="nav-item" id="nav-memory"><span>♧</span> Product memory</button>
+    <button class="nav-item" id="nav-aplus"><span>✧</span> A+ Content Studio</button>
+    <button class="nav-item" id="nav-usage"><span>◴</span> Usage & credits</button>
+    <div class="nav-head mt">YOUR WORKFLOW</div>
+    <div class="step-pill"><span class="step-num">1</span> Upload original photos</div>
+    <div class="step-pill"><span class="step-num">2</span> Select scenes & generate</div>
+    <div class="step-pill"><span class="step-num">3</span> Review, revise & approve</div>
+    <div class="sidebar-bottom"><div class="notice-soft">☼ <b>Product accuracy first</b><div>Always review every image against the original photograph before publishing.</div></div><div class="signed-user"><span class="avatar">S</span><div><b id="account-name">Demo workspace</b><span id="account-label">Local starter app</span></div><button id="logout-btn" title="Log out">↪</button></div></div>
+  </aside>
+  <main class="main">
+    <header class="top"><span class="crumb">Workspace <span>›</span> Image Production</span><div class="top-actions"><span class="status-dot" id="mode-dot"></span><span id="mode-label">Checking mode...</span><button class="ghost-btn" id="refresh-btn">↻ Refresh</button></div></header>
+    <section class="page" id="create-view">
+      <div class="heading"><div><div class="eyebrow">CREATE / GENERATE</div><h1>Create product images</h1><p>Upload source photos, describe the scene and generate visuals for your Amazon listings.</p></div><div class="chip">✧ Product-first workflow</div></div>
+      <div class="metrics"><div class="metric"><span>Images generated</span><strong id="metric-generated">0</strong><small>Outputs saved</small></div><div class="metric"><span>Approved images</span><strong id="metric-approved">0</strong><small>Ready for publishing review</small></div><div class="metric"><span>In the queue</span><strong id="metric-pending">0</strong><small>Processing or waiting</small></div><div class="metric"><span>Production jobs</span><strong id="metric-jobs">0</strong><small>Total submitted</small></div></div>
+      <div class="workspace-grid">
+      <div class="form-col">
+        <section class="panel"><div class="panel-head"><div class="panel-index">01</div><div><h2>Upload product photos</h2><p>Up to 50 photos in one job · Auto-matches with Catalog data by filename</p></div></div>
+          <label class="drop" id="drop-zone"><input type="file" id="photos" aria-label="Upload product photographs" multiple accept="image/jpeg,image/png,image/webp"><span class="drop-icon">↑</span><b>Drag and drop product photographs</b><span>or <u>browse files</u> • JPG, PNG, WEBP • max 18 MB each • multi-photo drop supported</span></label>
+          <div id="match-summary-pill" class="match-summary-pill hidden"></div>
+          <div id="product-list" class="product-list"><div class="empty-sm">No products uploaded yet</div></div>
+        </section>
+        <section class="panel"><div class="panel-head"><div class="panel-index">02</div><div><h2>Choose image type</h2><p>Select the kind of Amazon asset you need</p></div></div>
+          <div class="types" id="type-tabs">
+            <button class="type-option selected" data-kind="lifestyle"><span class="type-icon">▧</span><b>Lifestyle</b><small>Realistic product settings</small></button>
+            <button class="type-option" data-kind="main"><span class="type-icon">□</span><b>MAIN image</b><small>Pure white background</small></button>
+            <button class="type-option" data-kind="infographic"><span class="type-icon">◫</span><b>Infographic</b><small>Space for exact callouts</small></button>
+          </div>
+          <div class="form-field"><label for="scenes">Scene prompts <span class="help-inline">1 line = 1 image per product</span></label><textarea id="scenes" rows="8" spellcheck="true"></textarea><div class="below-input"><span>These are default scenes. Override them for an individual product under its photo.</span><b id="scene-count">5 scenes</b></div></div>
+          <div class="info-line">♧ Saved Product Memory is automatically applied whenever an uploaded product uses a matching SKU. <button class="inline-memory-btn" id="open-memory">Open product memory →</button></div><div class="info-line" id="task-tip">Tip: Include a specific, relevant environment. The system adds product-preservation rules automatically.</div>
+        </section>
+        <section class="panel"><div class="panel-head"><div class="panel-index">03</div><div><h2>Generation settings</h2><p>Control the balance between speed and quality</p></div></div>
+          <div class="fields-grid"><div class="form-field"><label for="model">Image model</label><select id="model"><option value="gpt-image-2.5-flare" selected>Flare · faster generation</option><option value="gpt-image-2.5-sunburst">Sunburst · precision editing</option></select></div><div class="form-field"><label for="quality">Image quality</label><select id="quality"><option value="low">Low · concept drafts</option><option value="medium" selected>Medium · draft review</option><option value="high">High · sharper detail</option><option value="xhigh">Extra high</option><option value="max">Maximum</option></select></div><div class="form-field"><label for="canvas">Output size</label><select id="canvas"><option value="square">Square · 2000 × 2000</option><option value="landscape">Landscape · 1536 × 1024</option><option value="banner">A+ desktop · 1464 × 600</option><option value="mobile">A+ mobile · 600 × 450</option><option value="portrait">Portrait · 1024 × 1536</option></select></div><div class="form-field"><label>Images to generate</label><div class="total-box"><strong id="estimated-count">0</strong><span>product × scene combinations</span></div></div></div>
+          <div class="info-line">Exact final dimensions are produced by resizing and padding the generated image. Infographic text should be added separately for reliable typography.</div>
+          <div class="submission"><span id="generation-hint" role="status" aria-live="polite">Add at least 1 photo to begin</span><button class="primary-btn" id="generate-btn" disabled>✦ Generate images <span>→</span></button></div>
+        </section>
+      </div>
+      <div class="right-col"><div class="guide-card"><span class="guide-symbol">✧</span><div class="eyebrow">YOUR MASTER RULES</div><h3>Keep the product exactly as photographed</h3><p>Each request automatically adds rules to protect shape, colour, texture, proportions and genuine labels. Generated images still require human review.</p><div class="guide-line"><span>✓</span> Original product as reference</div><div class="guide-line"><span>✓</span> No invented decorations</div><div class="guide-line"><span>✓</span> Realistic size & lighting</div><div class="guide-line"><span>✓</span> Separate MAIN / Lifestyle / A+</div></div><div class="tips-card"><b>Built for bulk production</b><p>10 product photos × 10 scene lines = 100 queued outputs. Generate, review and revise each image individually.</p><button id="see-queue">View production queue →</button></div></div>
+      </div>
+    </section>
+    <section class="page hidden" id="gallery-view"><div class="heading"><div><div class="eyebrow">ASSET MANAGEMENT</div><h1>Image library</h1><p>Review, approve, revise and download your team's images.</p></div><button class="ghost-btn" id="gallery-refresh">↻ Refresh gallery</button></div><div class="gallery-controls"><select id="filter-status"><option value="all">All images</option><option value="completed">Generated</option><option value="approved">Approved only</option><option value="failed">Failed</option></select><input id="filter-sku" placeholder="Search SKU or product..."/></div><div class="gallery" id="gallery-content"></div></section>
+    <section class="page hidden" id="memory-view">
+      <div class="heading"><div><div class="eyebrow">SHARED KNOWLEDGE BASE</div><h1>Product memory</h1><p>Save product facts, branding and corrections once. Future images for the same SKU automatically reuse these rules.</p></div></div>
+      <div class="memory-banner">♧ <b>Saved in StudioFlow, not learned by the model.</b> New generations and revisions read these instructions from your shared database. Product memory only applies when the SKU matches.</div>
+      <section class="panel"><div class="panel-head"><div class="panel-index">01</div><div><h2>Find or create product memory</h2><p>Enter the same SKU/ASIN used when generating an image</p></div></div>
+        <div class="memory-controls"><input id="memory-sku" placeholder="Enter SKU or ASIN e.g. 231846"><button class="secondary-btn" id="memory-load">Open product</button></div>
+        <div id="memory-details" class="hidden">
+          <div class="memory-loaded">Current product: <b id="memory-current-sku"></b> <span id="memory-updated"></span></div>
+          <div class="form-field"><label for="memory-facts">Verified product facts</label><textarea id="memory-facts" rows="6" placeholder="Product: RGB LED Ball Lights
+Colour: Blue wire
+Bulbs: 20
+Length: 20 ft
+Preserve exact photographed ball shape and black bulb heads"></textarea><p class="memory-subtext">Only add verified facts. These will be included automatically with each new prompt for this SKU.</p></div>
+          <div id="catalog-facts-panel" class="catalog-facts hidden"><b>Imported catalog facts</b><pre id="catalog-facts"></pre><p class="memory-subtext">These specifications are managed by catalog imports and are included alongside your verified facts.</p></div>
+          <button class="primary-btn" id="memory-save-facts">Save product facts</button>
+          <div class="branding-wrap">
+            <div class="branding-title"><div><h3>Branding for this product</h3><p class="memory-subtext">Create a reusable brand profile, then assign it to any SKU / ASIN. Profiles are shared across your team.</p></div><span class="branding-chip" id="brand-assigned-status">No brand assigned</span></div>
+            <div class="brand-actions"><div class="form-field"><label for="memory-brand-select">Select an existing brand</label><select id="memory-brand-select"><option value="">— No brand selected —</option></select></div><button class="secondary-btn" id="memory-brand-assign">Assign to this SKU</button><button class="secondary-btn" id="memory-brand-new">+ New brand</button></div>
+            <div class="brand-editor" id="brand-editor">
+              <div class="branding-field-grid">
+                <div class="form-field"><label for="brand-name">Brand name</label><input id="brand-name" maxlength="100" placeholder="e.g. Laura Ashley"></div>
+                <div class="form-field"><label for="brand-heading-font">Heading font</label><input id="brand-heading-font" maxlength="90" placeholder="Cinzel"></div>
+                <div class="form-field"><label for="brand-body-font">Body font</label><input id="brand-body-font" maxlength="90" placeholder="Roboto"></div>
+              </div>
+              <div class="branding-color-grid">
+                <label>Primary colour <input type="color" id="brand-primary-color" value="#233a54"></label>
+                <label>Secondary colour <input type="color" id="brand-secondary-color" value="#f2eee8"></label>
+                <label>Accent colour <input type="color" id="brand-accent-color" value="#b98e5c"></label>
+              </div>
+              <div class="form-field"><label for="brand-style">Visual style and brand mood</label><textarea id="brand-style" rows="3" maxlength="1600" placeholder="Elegant, timeless and restrained. Soft natural lighting, understated textures."></textarea></div>
+              <div class="form-field"><label for="brand-rules">Brand do's and don'ts</label><textarea id="brand-rules" rows="4" maxlength="4000" placeholder="Use approved colours. Keep the product exact. No added people in MAIN. Do not draw or alter the logo."></textarea></div>
+              <div class="brand-logo-row"><div class="brand-logo-preview"><img class="hidden" id="brand-logo-preview" alt="Saved brand logo"/><span id="brand-logo-empty">No logo uploaded</span></div><div class="brand-logo-controls"><label for="brand-logo-file">Approved brand logo (PNG, JPG or WEBP; under 5 MB)</label><input type="file" id="brand-logo-file" accept="image/png,image/jpeg,image/webp"><button class="secondary-btn" id="brand-upload-logo">Upload logo</button></div></div>
+              <div class="brand-actions"><button class="primary-btn" id="brand-save-profile">Save brand profile</button><span class="memory-subtext" id="brand-access-note">Only a workspace owner can change branding.</span></div>
+              <p class="brand-safety-note">Brand colours and style are added to future lifestyle/infographic prompts. MAIN images remain white-background and free of new logos or text. This version stores your exact logo as a reference; it does not stamp a logo or render final typography into images.</p>
+            </div>
+          </div>
+          <div class="memory-rules-wrap"><h3>Permanent corrections for this SKU</h3><div id="memory-rule-list" class="rule-list"></div>
+            <label for="memory-new-rule">Add an approved correction</label><textarea id="memory-new-rule" rows="3" placeholder="All stems must remain straight and go fully inside the pot, never bend them."></textarea>
+            <button class="secondary-btn" id="memory-add-rule">+ Save product rule</button></div>
+        </div>
+      </section>
+      <section class="panel"><div class="panel-head"><div class="panel-index">02</div><div><h2>Company master instructions</h2><p>Apply to all products and image generations</p></div></div>
+        <textarea id="company-rules" rows="9" placeholder="Company production standards"></textarea>
+        <div class="below-input"><span id="company-edit-note">Only a designated owner can update company-wide rules.</span><button class="secondary-btn" id="company-save">Save company rules</button></div>
+      </section>
+      <section class="panel"><div class="panel-head"><div class="panel-index">03</div><div><h2>Recent saved products</h2><p>Click a SKU to load its rules</p></div></div><div id="memory-products" class="product-memory-list"></div></section>
+    </section>
+    <section class="page hidden" id="catalog-view">
+      <div class="heading">
+        <div>
+          <div class="eyebrow">STRUCTURED CONTENT FEED</div>
+          <h1>Product catalog & content</h1>
+          <p>Feed ASIN, SKU, Item Code, Variation, Title, Highlights and Bullets. Uploaded photos will automatically match to this data by filename.</p>
+        </div>
+        <div class="catalog-top-actions">
+          <a href="/api/catalog/template" class="ghost-btn" download="studioflow_product_template.csv">⬇ Download CSV Template</a>
+        </div>
+      </div>
+      
+      <div class="workspace-grid">
+        <div class="form-col">
+          <section class="panel">
+            <div class="panel-head">
+              <div class="panel-index">01</div>
+              <div>
+                <h2>Upload Product Sheet (CSV)</h2>
+                <p>Upload your master product CSV to populate verified facts and auto-link images</p>
+              </div>
+            </div>
+            
+            <label class="drop" id="csv-drop-zone">
+              <input type="file" id="csv-file" aria-label="Upload product catalog CSV" accept=".csv,text/csv">
+              <span class="drop-icon">⇪</span>
+              <b>Drag & drop your product data CSV</b>
+              <span>or <u>browse files</u> • Pre-formatted template with all 13 columns</span>
+            </label>
+            <div id="csv-status" class="csv-status-box hidden"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div class="panel-index">02</div>
+              <div>
+                <h2>Catalog products (<span id="catalog-total-badge">0</span>)</h2>
+                <p>Structured product data injected into prompts and used for photo matching</p>
+              </div>
+            </div>
+            <div class="catalog-search-bar">
+              <input id="catalog-search-input" placeholder="Search by SKU, ASIN, Item Code or Title...">
+            </div>
+            <div id="catalog-table-wrap" class="catalog-table-wrap">
+              <div class="empty-sm">No products in catalog yet. Download the template above and upload your CSV.</div>
+            </div>
+          </section>
+        </div>
+
+        <div class="right-col">
+          <div class="guide-card">
+            <span class="guide-symbol">▤</span>
+            <div class="eyebrow">SUPPORTED COLUMNS</div>
+            <h3>Included Specifications</h3>
+            <p>Every attribute is analyzed to keep products visually faithful and stage relevant scenes:</p>
+            <div class="guide-line"><span>✓</span> ASIN, Item Code & SKU</div>
+            <div class="guide-line"><span>✓</span> Colour, Size & Variation</div>
+            <div class="guide-line"><span>✓</span> Title & Item Highlight</div>
+            <div class="guide-line"><span>✓</span> Bullet Points 1 to 5</div>
+            <div class="guide-line"><span>✓</span> Smart filename auto-linking</div>
+          </div>
+          <div class="tips-card">
+            <b>Smart Filename Matching</b>
+            <p>Name your photos with your SKU or ASIN (e.g. <code>B08SAMPLE_angle1.jpg</code> or <code>SKU102-BLUE.png</code>). StudioFlow matches them automatically on upload!</p>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="page hidden" id="jobs-view"><div class="heading"><div><div class="eyebrow">BULK PROCESSING</div><h1>Production queue</h1><p>Track your team's image jobs and any generation failures.</p></div><button class="ghost-btn" id="queue-refresh">↻ Refresh queue</button></div><div id="queue-list" class="queue-list"></div></section>
+    <section class="page hidden" id="aplus-view">
+      <div class="heading"><div><div class="eyebrow">BRANDED BACKGROUNDS</div><h1>A+ Content Studio</h1><p>Create desktop and mobile backgrounds using saved brand instructions and verified product facts.</p></div></div>
+      <div class="memory-banner">Generate the background here, then add approved copy, typography and logos in your design tool.</div>
+      <div class="aplus-layout">
+        <section class="panel">
+          <div class="panel-head"><div class="panel-index">01</div><div><h2>A+ profile</h2><p>Saved styling for this content workflow</p></div></div>
+          <div class="brand-actions"><div class="form-field"><label for="aplus-profile">Saved profile</label><select id="aplus-profile"><option value="">Select an A+ profile</option></select></div><button type="button" class="secondary-btn" id="aplus-new" disabled>New profile</button></div>
+          <details class="aplus-profile-details" open><summary>Profile instructions & branding</summary>
+            <div class="form-field"><label for="aplus-name">Profile name</label><input id="aplus-name" maxlength="100" disabled></div>
+            <div class="form-field"><label for="aplus-master">A+ master instructions</label><textarea id="aplus-master" rows="6" maxlength="9000" disabled></textarea></div>
+            <div class="form-field"><label for="aplus-brand-notes">Branding notes</label><textarea id="aplus-brand-notes" rows="3" maxlength="5000" disabled></textarea></div>
+            <div class="fields-grid"><div class="form-field"><label for="aplus-heading-font">Heading font</label><input id="aplus-heading-font" maxlength="100" value="Cinzel" disabled></div><div class="form-field"><label for="aplus-body-font">Body font</label><input id="aplus-body-font" maxlength="100" value="Roboto" disabled></div></div>
+            <div class="branding-color-grid"><label>Primary<input id="aplus-primary" type="color" value="#283f44" disabled></label><label>Secondary<input id="aplus-secondary" type="color" value="#f4e7d9" disabled></label><label>Accent<input id="aplus-accent" type="color" value="#9e7655" disabled></label></div>
+            <button type="button" class="primary-btn" id="aplus-save" disabled>Save A+ profile</button>
+            <div class="brand-logo-row"><img id="aplus-logo" class="hidden aplus-logo" alt="Saved A+ logo reference"><div class="brand-logo-controls"><label for="aplus-logo-file">Logo reference · PNG, JPG or WEBP, up to 5 MB</label><input id="aplus-logo-file" type="file" accept="image/png,image/jpeg,image/webp" disabled><button type="button" class="secondary-btn" id="aplus-upload-logo" disabled>Upload logo</button></div></div>
+          </details>
+          <p class="memory-subtext" id="aplus-edit-note">Loading profile permissions…</p>
+        </section>
+        <div class="form-col">
+          <section class="panel"><div class="panel-head"><div class="panel-index">02</div><div><h2>Product photos</h2><p>Filenames match your catalog; manual SKU corrections stay yours</p></div></div>
+            <label class="drop" id="aplus-drop"><input id="aplus-files" type="file" multiple accept="image/png,image/jpeg,image/webp" aria-label="Upload A+ product photos"><span class="drop-icon">↑</span><b>Drop product photos or browse</b><span>Up to 50 photos · 18 MB each · 100 MB combined</span></label>
+            <div id="aplus-file-list" class="aplus-file-list"></div>
+          </section>
+          <section class="panel"><div class="panel-head"><div class="panel-index">03</div><div><h2>Scenes & output</h2><p>One scene line creates one image per product</p></div></div>
+            <div class="form-field"><label for="aplus-scenes">Scene prompts</label><textarea id="aplus-scenes" rows="5"></textarea></div>
+            <div class="form-field"><label for="aplus-extra">Optional instruction for this batch</label><textarea id="aplus-extra" rows="2" maxlength="2000" placeholder="Leave clear space on the left for the headline"></textarea></div>
+            <div class="fields-grid"><div class="form-field"><label for="aplus-model">Image model</label><select id="aplus-model"></select></div><div class="form-field"><label for="aplus-quality">Quality</label><select id="aplus-quality"></select></div><div class="form-field"><label for="aplus-canvas">Final size</label><select id="aplus-canvas"><option value="banner">Desktop · 1464 × 600</option><option value="mobile">Mobile · 600 × 450</option></select></div><div class="form-field"><label>Images to generate</label><div class="total-box"><strong id="aplus-count">0</strong><span>product × scene combinations</span></div></div></div>
+            <p class="memory-subtext">Exports preserve the whole image with padding where needed. Review the product and layout before adding final artwork.</p>
+            <div class="submission"><span id="aplus-hint" role="status" aria-live="polite"></span><button type="button" class="primary-btn" id="aplus-generate" disabled>Generate A+ backgrounds</button></div>
+          </section>
+        </div>
+      </div>
+    </section>
+    <section class="page hidden" id="usage-view">
+      <div class="heading"><div><div class="eyebrow">LOCAL USAGE ESTIMATES</div><h1>Usage & credits</h1><p>Track this workspace’s live image requests and estimated spending.</p></div><button type="button" class="ghost-btn" id="usage-refresh">Refresh usage</button></div>
+      <div class="metrics"><div class="metric"><span>Estimated tracked spend</span><strong id="usage-spent">$0.00</strong><small>Known token costs only</small></div><div class="metric"><span>Live requests</span><strong id="usage-requests">0</strong><small>Including unsuccessful attempts</small></div><div class="metric"><span>Unknown costs</span><strong id="usage-unreported">0</strong><small>Includes pending requests</small></div><div class="metric"><span>Reported tokens · in / out</span><strong class="usage-token-count"><span id="usage-input">0</span> / <span id="usage-output">0</span></strong><small>Image and text tokens</small></div></div>
+      <div class="panel usage-checkpoint-panel">
+        <div><div class="eyebrow">MANUAL BALANCE CHECKPOINT</div><h2 id="usage-balance">Not configured</h2><p id="usage-alert" class="usage-alert" role="status"></p></div>
+        <div><div class="fields-grid"><div class="form-field"><label for="usage-checkpoint">Checked balance (USD)</label><input id="usage-checkpoint" inputmode="decimal" placeholder="150.00" disabled></div><div class="form-field"><label for="usage-threshold">Alert below (%)</label><input id="usage-threshold" type="number" min="1" max="90" value="20" disabled></div></div><button type="button" class="secondary-btn" id="usage-save" disabled>Save balance checkpoint</button><p class="memory-subtext" id="usage-owner-note"></p></div>
+      </div>
+      <div class="usage-tables"><section class="panel"><h2>By team member</h2><div class="usage-table-scroll"><table class="usage-table"><thead><tr><th>Team member</th><th>Requests</th><th>Est. spend</th><th>Unknown</th></tr></thead><tbody id="usage-users"></tbody></table></div></section><section class="panel"><h2>By model</h2><div class="usage-table-scroll"><table class="usage-table"><thead><tr><th>Model</th><th>Requests</th><th>Est. spend</th><th>Unknown</th></tr></thead><tbody id="usage-models"></tbody></table></div></section></div>
+      <p id="usage-notice" class="memory-subtext"></p><p id="usage-pricing" class="memory-subtext"></p>
+      <p class="memory-subtext"><a href="https://platform.openai.com/settings/organization/billing/overview" target="_blank" rel="noopener noreferrer">OpenAI Billing</a> is the source of truth. <a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noopener noreferrer">View current pricing</a>.</p>
+    </section>
+  </main>
+</div>
+<div class="modal-overlay hidden" id="modal"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-header"><div><span class="eyebrow">REVIEW & REVISION</span><h2 id="modal-title">Image review</h2></div><button class="x-btn" id="close-modal" aria-label="Close image review">×</button></div><div class="modal-content"><div class="image-preview"><img id="modal-img" alt="Generated image review preview"></div><div class="modal-actions"><div class="tag" id="modal-status"></div><label for="revision-prompt">Correction prompt</label><textarea id="revision-prompt" rows="5" placeholder="Keep the product unchanged. Only adjust the background lighting and composition..."></textarea><label>Revision settings</label><div class="revision-controls"><select id="revision-model" aria-label="Revision image model"><option value="gpt-image-2.5-sunburst" selected>Sunburst · precision</option><option value="gpt-image-2.5-flare">Flare · faster</option></select><select id="revision-quality" aria-label="Revision image quality"><option value="high">High quality</option><option value="medium">Medium quality</option><option value="xhigh">Extra high</option><option value="max">Maximum</option><option value="low">Low draft</option></select></div><label class="save-memory-toggle"><input type="checkbox" id="remember-revision"> <span>Save this correction as a permanent rule after approving the revision</span></label><div id="revision-history" class="revision-history"></div><button class="primary-btn full" id="revise-btn">↻ Create revision</button><button class="secondary-btn full" id="approve-modal-btn">✓ Approve image</button><a id="download-modal" class="outline-link" download="product-image.jpg">↓ Download JPG</a><p class="mini-note">Revisions create a new image request and can incur a new API charge. Your original stays saved.</p></div></div></div></div>
+<div class="login-overlay hidden" id="login-overlay"><form id="login-form" class="login-card"><div class="brand-icon large">✦</div><h2>Welcome to StudioFlow</h2><p>Sign in to your team's product image workspace.</p><label for="login-user">Employee username</label><input id="login-user" autocomplete="username" required placeholder="designer1"><label for="login-pass">Password</label><input type="password" id="login-pass" autocomplete="current-password" required placeholder="Your team password"><div class="error-msg" id="login-error"></div><button class="primary-btn full" type="submit">Sign in →</button></form></div>
+<div class="toast-holder" id="toasts"></div>
+<script src="/static/aplus.js" defer></script>
+<script src="/static/usage.js" defer></script>
+<script src="/static/app.js" defer></script>
+</body></html>
