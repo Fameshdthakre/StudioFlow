@@ -6,6 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..dependencies import current_user, get_workspace
 from ..services import aplus as service
+from ..services import assets
+from .library import asset_response
 from ..services.aplus import DEFAULT_MASTER
 from ..workspace import Workspace
 
@@ -70,6 +72,10 @@ def upload_logo(
 def logo(
     pid: str, user=Depends(current_user), workspace: Workspace = Depends(get_workspace)
 ):
-    return FileResponse(
-        service.logo(workspace, pid=pid, user=user), media_type="image/png"
+    path = service.logo(workspace, pid=pid, user=user)
+    aid = assets.legacy_id(workspace, "brand_logos/" + path.name)
+    return (
+        asset_response(workspace, aid)
+        if aid
+        else FileResponse(path, media_type="image/png")
     )

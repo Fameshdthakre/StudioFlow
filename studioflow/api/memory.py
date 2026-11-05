@@ -13,6 +13,8 @@ from pydantic import BaseModel, Field
 
 from ..dependencies import current_user, get_workspace
 from ..services import memory as service
+from ..services import assets
+from .library import asset_response
 from ..workspace import Workspace
 
 router = APIRouter()
@@ -103,8 +105,12 @@ def get_brand_logo(
     user: str = Depends(current_user),
     workspace: Workspace = Depends(get_workspace),
 ):
-    return FileResponse(
-        service.get_brand_logo(workspace, bid=bid, user=user), media_type="image/png"
+    path = service.get_brand_logo(workspace, bid=bid, user=user)
+    aid = assets.legacy_id(workspace, "brand_logos/" + path.name)
+    return (
+        asset_response(workspace, aid)
+        if aid
+        else FileResponse(path, media_type="image/png")
     )
 
 

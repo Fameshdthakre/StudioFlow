@@ -2,6 +2,11 @@
 .env
 .env.*
 !.env.example
+!.env.platform.example
+.secrets/
+.migration/
+.platform/
+node_modules/
 
 # SQLite databases and persistent volumes
 data/

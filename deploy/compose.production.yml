@@ -20,3 +20,8 @@ services:
         target: /app/data
         bind:
           create_host_path: false
+    networks: [platform]
+networks:
+  platform:
+    external: true
+    name: ${STUDIOFLOW_NETWORK:-studioflow-platform}

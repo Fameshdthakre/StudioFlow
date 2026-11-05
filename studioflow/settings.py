@@ -24,6 +24,17 @@ class Settings:
     secure_cookie: bool
     enable_aplus: bool = True
     enable_usage: bool = True
+    database_url: str = ""
+    storage_backend: str = "local"
+    s3_endpoint: str = ""
+    s3_bucket: str = "studioflow"
+    s3_region: str = "us-east-1"
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    enable_creation: bool = True
+    enable_composition: bool = True
+    enable_exports: bool = True
+    validated_high_res_models: tuple[str, ...] = ()
 
     @classmethod
     def load(cls, base: Path):
@@ -54,6 +65,19 @@ class Settings:
         }
         if not admins and team:
             admins = {next(iter(team))}
+        database_url = os.getenv("DATABASE_URL", "").strip()
+        if database_url and not database_url.startswith("postgresql+psycopg://"):
+            raise RuntimeError("DATABASE_URL must use postgresql+psycopg://")
+        storage_backend = os.getenv(
+            "STUDIOFLOW_STORAGE", "s3" if database_url else "local"
+        )
+        if storage_backend not in ("local", "s3"):
+            raise RuntimeError("STUDIOFLOW_STORAGE must be local or s3")
+        if storage_backend == "s3" and not all(
+            os.getenv(k)
+            for k in ("S3_ENDPOINT", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY")
+        ):
+            raise RuntimeError("Private S3 storage requires endpoint and credentials")
         return cls(
             Path(os.getenv("STUDIOFLOW_DATA_DIR", str(base / "data"))).resolve(),
             mode,
@@ -65,4 +89,17 @@ class Settings:
             os.getenv("COOKIE_SECURE", "0") == "1",
             os.getenv("STUDIOFLOW_ENABLE_APLUS", "1") == "1",
             os.getenv("STUDIOFLOW_ENABLE_USAGE", "1") == "1",
+            database_url,
+            storage_backend,
+            os.getenv("S3_ENDPOINT", ""),
+            os.getenv("S3_BUCKET", "studioflow"),
+            os.getenv("S3_REGION", "us-east-1"),
+            os.getenv("S3_ACCESS_KEY_ID", ""),
+            os.getenv("S3_SECRET_ACCESS_KEY", ""),
+            os.getenv("STUDIOFLOW_ENABLE_CREATION", "1") == "1",
+            os.getenv("STUDIOFLOW_ENABLE_COMPOSITION", "1") == "1",
+            os.getenv("STUDIOFLOW_ENABLE_EXPORTS", "1") == "1",
+            tuple(
+                filter(None, os.getenv("STUDIOFLOW_VALIDATED_2K_MODELS", "").split(","))
+            ),
         )

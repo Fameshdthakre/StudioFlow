@@ -1,5 +1,7 @@
 # StudioFlow
 
+> This is the archived SQLite-era guide. For the current PostgreSQL/SeaweedFS release, use the [root README](../README.md), [architecture](ARCHITECTURE.md), and [deployment runbook](DOCKER_DEPLOY.md). Do not use the legacy deployment steps below for the platform upgrade.
+
 StudioFlow is a team workspace for creating, reviewing, revising, and approving product images. It combines FastAPI, a dependency-free JavaScript frontend, SQLite, and local image storage. Demo mode creates previews without paid requests; live mode edits uploaded photographs through the image provider.
 
 ## Run locally

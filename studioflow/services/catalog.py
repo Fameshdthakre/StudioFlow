@@ -8,6 +8,7 @@ import uuid
 from fastapi import HTTPException
 
 from .common import audit, now
+from ..persistence.repository import ensure_product
 
 CSV_COLUMNS = [
     "ASIN",
@@ -84,12 +85,13 @@ def find_catalog_product(c, identifier):
     # A SKU is authoritative. Aliases can be shared by catalog variations, so
     # never select an arbitrary row when an ASIN or item code is ambiguous.
     rows = c.execute(
-        "SELECT * FROM catalog_products WHERE sku=? COLLATE NOCASE LIMIT 2", (key,)
+        "SELECT * FROM catalog_products WHERE UPPER(sku)=UPPER(?) AND archived=0 LIMIT 2",
+        (key,),
     ).fetchall()
     if not rows:
         rows = c.execute(
             """SELECT * FROM catalog_products
-            WHERE asin=? COLLATE NOCASE OR item_code=? COLLATE NOCASE LIMIT 2""",
+            WHERE (UPPER(asin)=UPPER(?) OR UPPER(item_code)=UPPER(?)) AND archived=0 LIMIT 2""",
             (key, key),
         ).fetchall()
     if len(rows) > 1:
@@ -212,7 +214,7 @@ def import_catalog(workspace, file, user):
             facts = format_catalog_facts(p_dict)
 
             existing_rows = c.execute(
-                "SELECT id,facts_summary FROM catalog_products WHERE sku=? COLLATE NOCASE LIMIT 2",
+                "SELECT id,facts_summary FROM catalog_products WHERE UPPER(sku)=UPPER(?) LIMIT 2",
                 (sku,),
             ).fetchall()
             if len(existing_rows) > 1:
@@ -306,9 +308,17 @@ def import_catalog(workspace, file, user):
                 # Catalog-derived facts stay in catalog_products. This row stores
                 # only manually maintained facts, corrections, and branding.
             c.execute(
-                """INSERT OR IGNORE INTO product_memory(sku,facts,updated_by,updated_at)
-                VALUES(?,?,?,?)""",
+                """INSERT INTO product_memory(sku,facts,updated_by,updated_at)
+                VALUES(?,?,?,?) ON CONFLICT(sku) DO NOTHING""",
                 (sku, "", user, now()),
+            )
+            product_id = ensure_product(c, sku)
+            c.execute(
+                "UPDATE catalog_products SET product_id=?,archived=0 WHERE id=?",
+                (product_id, cid),
+            )
+            c.execute(
+                "UPDATE product_memory SET product_id=? WHERE sku=?", (product_id, sku)
             )
 
         total = c.execute("SELECT COUNT(*) n FROM catalog_products").fetchone()["n"]
@@ -330,14 +340,14 @@ def get_catalog(workspace, q, user):
             rows = c.execute(
                 """
                 SELECT * FROM catalog_products 
-                WHERE UPPER(sku) LIKE ? OR UPPER(asin) LIKE ? OR UPPER(item_code) LIKE ? OR UPPER(title) LIKE ?
+                WHERE archived=0 AND (UPPER(sku) LIKE ? OR UPPER(asin) LIKE ? OR UPPER(item_code) LIKE ? OR UPPER(title) LIKE ?)
                 ORDER BY updated_at DESC LIMIT 200
             """,
                 (term, term, term, term),
             ).fetchall()
         else:
             rows = c.execute(
-                "SELECT * FROM catalog_products ORDER BY updated_at DESC LIMIT 200"
+                "SELECT * FROM catalog_products WHERE archived=0 ORDER BY updated_at DESC LIMIT 200"
             ).fetchall()
         total = c.execute("SELECT COUNT(*) n FROM catalog_products").fetchone()["n"]
     return {"products": [dict(r) for r in rows], "total": total}
@@ -347,7 +357,7 @@ def delete_catalog_product(workspace, id, user):
     if not workspace.is_admin(user):
         raise HTTPException(403, "Only workspace owner can delete catalog items")
     with workspace.db() as c:
-        c.execute("DELETE FROM catalog_products WHERE id=?", (id,))
+        c.execute("UPDATE catalog_products SET archived=1 WHERE id=?", (id,))
     return {"ok": True}
 
 
@@ -356,7 +366,7 @@ def match_files(workspace, body, user):
         products = [
             dict(r)
             for r in c.execute(
-                "SELECT sku, asin, item_code, colour, size, variation, title FROM catalog_products"
+                "SELECT sku, asin, item_code, colour, size, variation, title FROM catalog_products WHERE archived=0"
             ).fetchall()
         ]
 

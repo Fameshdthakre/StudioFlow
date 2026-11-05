@@ -1,0 +1,10 @@
+{
+  "name": "studioflow-browser-tests",
+  "private": true,
+  "scripts": {
+    "test": "node acceptance.cjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
+  }
+}

@@ -11,6 +11,9 @@ __pycache__
 .gitignore
 .env
 .env.*
+.secrets
+.migration
+.platform
 data
 tests
 node_modules
