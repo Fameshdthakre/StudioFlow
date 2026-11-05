@@ -30,6 +30,13 @@ def reported(*, split=False):
 
 
 class PricingTests(unittest.TestCase):
+    def test_26_models_record_usage_with_their_published_rates(self):
+        for model in ("gpt-image-2.6-flare", "gpt-image-2.6-sunburst"):
+            with self.subTest(model=model):
+                result = pricing.estimate(reported(), pricing.rate_card(model))
+                self.assertEqual(result["meter_status"], "reported")
+                self.assertEqual(result["cost_microusd"], 6740)
+
     def test_mixed_output_uses_distinct_image_and_text_rates(self):
         result = pricing.estimate(
             reported(split=True), pricing.rate_card("gpt-image-1.5")

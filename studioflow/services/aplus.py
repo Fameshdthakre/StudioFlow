@@ -3,6 +3,7 @@
 import io
 import re
 import sqlite3
+from sqlalchemy.exc import IntegrityError
 import uuid
 from datetime import datetime, timezone
 
@@ -10,6 +11,7 @@ from fastapi import HTTPException
 from PIL import Image, ImageOps
 
 from .common import audit
+from . import assets
 
 DEFAULT_MASTER = (
     "Create an Amazon Premium A+ banner background using the exact source product. "
@@ -76,7 +78,7 @@ def create(workspace, body, user):
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (pid, *values.values(), datetime.now(timezone.utc).isoformat(), user),
             )
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, IntegrityError):
             raise HTTPException(409, "An A+ profile with this name already exists")
         audit(c, user, "aplus_profile_created", "", pid)
     return {"id": pid, "ok": True}
@@ -98,7 +100,7 @@ def update(workspace, pid, body, user):
                     pid,
                 ),
             )
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, IntegrityError):
             raise HTTPException(409, "An A+ profile with this name already exists")
         audit(c, user, "aplus_profile_updated", "", pid)
     return {"id": pid, "ok": True}
@@ -128,6 +130,7 @@ def upload_logo(workspace, pid, file, user):
                 image.save(target, "PNG")
         except Exception as exc:
             raise HTTPException(400, "Upload a valid PNG, JPG or WEBP logo") from exc
+        assets.publish_logo(workspace, raw, target, user, "aplus_profile", pid)
         with workspace.db() as c:
             c.execute(
                 "UPDATE aplus_profiles SET logo_file=?,updated_at=?,updated_by=? WHERE id=?",
@@ -147,9 +150,9 @@ def logo(workspace, pid, user):
             "SELECT logo_file FROM aplus_profiles WHERE id=?", (pid,)
         ).fetchone()
     name = row["logo_file"] if row else ""
-    if (
-        not re.fullmatch(r"[0-9a-f]{32}\.png", name)
-        or not (workspace.brand_logos / name).is_file()
+    if not re.fullmatch(r"[0-9a-f]{32}\.png", name) or not (
+        (workspace.brand_logos / name).is_file()
+        or assets.legacy_id(workspace, "brand_logos/" + name)
     ):
         raise HTTPException(404, "A+ logo not found")
     return workspace.brand_logos / name

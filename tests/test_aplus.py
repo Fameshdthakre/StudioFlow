@@ -197,7 +197,10 @@ class AplusTests(unittest.TestCase):
         self.assertEqual(self.generate(pid).status_code, 404)
         self.assertEqual(self.client.get("/api/usage").status_code, 404)
         self.assertEqual(
-            self.client.get("/api/config").json()["features"],
+            {
+                k: self.client.get("/api/config").json()["features"][k]
+                for k in ("aplus", "usage")
+            },
             {"aplus": False, "usage": False},
         )
         self.assertEqual(

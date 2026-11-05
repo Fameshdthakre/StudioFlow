@@ -1,82 +1,78 @@
 # StudioFlow
 
-StudioFlow turns original product photos into reviewed MAIN, lifestyle, infographic and A+ backgrounds. The current app keeps its shared catalog, product memory, persistent sessions and durable generation queue while adding the selected reference-app features.
+StudioFlow is a shared workspace for creating, reviewing and exporting product images. The platform upgrade uses PostgreSQL 18 for records and private SeaweedFS S3 storage for images. The browser remains plain JavaScript; the application is FastAPI with background workers.
 
-## Run locally
+The upgrade is developed on `codex/studioflow-platform-upgrade`. Existing production must complete the explicit migration and restore gates before this release can deploy. A push cannot automatically convert the old SQLite workspace.
 
-Use Python 3.12 or 3.13. In PowerShell, from this directory:
+## Run the isolated Docker stack
 
-```powershell
-py -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.lock
+Keep an existing `.env` and `data/` directory intact. Copy `.env.platform.example` to `.env.platform`, set private team/database/storage credentials, and keep `APP_MODE=demo` for this first isolated run. `DATABASE_URL` must use the same password as `POSTGRES_PASSWORD`; URL-encode reserved characters in the URL.
+
+```sh
+docker compose --env-file .env.platform -p studioflow-local config --quiet
+docker compose --env-file .env.platform -p studioflow-local build studioflow ops
+docker compose --env-file .env.platform -p studioflow-local up -d --wait postgres seaweedfs
+docker compose --env-file .env.platform -p studioflow-local run --rm ops init
+docker compose --env-file .env.platform -p studioflow-local up -d --wait studioflow
 ```
 
-For a new installation, copy `.env.example` to `.env` and configure `TEAM_USERS`. Keep an existing `.env`; it contains your settings and credentials. `ADMIN_USERS` selects workspace owners; if blank, the first configured account is the owner.
+Open [the isolated app](http://127.0.0.1:8001). Its named volumes and network are separate from an existing app on port 8000. PostgreSQL and SeaweedFS have no published host ports. `ops init` is repeatable and applies the checked-in Alembic migration; ordinary application startup only checks schema compatibility.
 
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8000
-```
+For production setup, migration, encrypted backups and restore commands, follow [the deployment runbook](docs/DOCKER_DEPLOY.md). Do not use `down -v` on a stack whose data must be retained.
 
-Open `http://127.0.0.1:8000`. `APP_MODE=demo` creates local previews without provider calls. Live generation requires `APP_MODE=live`, an API key and an account with access to the selected model. Account model access has not been tested with paid requests. For a standalone local demo without accounts, explicitly set `ALLOW_ANONYMOUS_DEMO=1`; this mode accepts only loopback requests. Containers always require team accounts.
+## Creation and image quality
 
-Do not point a demo preview at a live workspace's data directory: startup resumes its queued work. Use a separate `STUDIOFLOW_DATA_DIR` and `STUDIOFLOW_LOAD_DOTENV=0` for isolated previews.
+- Select MAIN, Lifestyle and Infographic independently. Deselecting a type retains its settings. Add extra product angles and separate style references under each product.
+- New submissions default to high quality. MAIN uses a verified transparent single-item cutout when supplied, with the confirmed pack quantity. Without a cutout, MAIN requires a paid scene request in live mode.
+- Five versioned graphic recipes cover Feature, Dimensions, Pack Contents, Usage/Styling and Detail Collage. Local rendering uses bundled licensed Cinzel and Roboto fonts, exact copy, dimension arrows, themes and colours. Product facts must be confirmed.
+- Masters are saved before local composition. Editing a card layout creates an unapproved revision without another provider call. A provider image edit is a separate paid operation.
+- Square final images are JPEGs at 2000 × 2000. Native 2048 × 2048 generation is available only for compatible models explicitly listed in `STUDIOFLOW_VALIDATED_2K_MODELS` after provider validation. Unsupported requests fail instead of silently changing size. The library displays actual saved master dimensions.
+- Demo images are workflow fixtures. They do not establish photographic quality. A paid sample with the real product, approved cutout and confirmed facts remains necessary before accepting visual quality.
 
-## Integrated workflows
+Existing model choices, catalog matching, product memory, A+ background creation, approvals, sessions, history and usage reporting are retained. A+ remains a background workflow; its desktop/mobile canvas sizes are preserved. Square card templates apply to Infographic outputs.
 
-- **A+ Content Studio:** owners save independent instructions, fonts, colors and logo references. Teams select a profile, upload product photos, review matched SKUs, enter scenes and choose desktop 1464 × 600 or mobile 600 × 450 output. Each accepted job saves the entire profile, so later profile changes do not alter that job or its revisions. Catalog facts and approved SKU corrections still apply. Add final text and logo artwork in a design tool.
-- **Six image models:** Flare and Sunburst remain the generation and revision defaults. GPT Image 2, GPT Image 1.5, GPT Image 1 Mini and ChatGPT Image Latest are also available. The API and all three model selectors share the same quality capabilities; `xhigh` and `max` are restricted to the two 2.5 models. Existing general-generation API resolutions are preserved. A+ uses closer aspect ratios on flexible-size models. Final JPEG exports use padding to retain the complete image.
-- **Usage & credits:** live provider attempts are recorded before the request, then raw usage and the request ID are saved immediately after the response, before decoding or exporting the image. A failed export can therefore retain its usage receipt. A timeout without a response has an unknown cost. Demo previews do not count as paid requests.
+## Library and exports
 
-The usage dashboard estimates StudioFlow spending only. It is not an invoice or an account balance API. A manually checked balance checkpoint subtracts subsequent known usage; missing or partial usage remains visibly unknown. It does not add credits, enforce a hard spending cap, or include other applications, taxes or historical requests that were never recorded. Owners must wait for active requests to finish and check OpenAI Billing before saving a checkpoint.
+The library uses server-side filters and cursor pagination, with private thumbnails. Selection persists across pagination, refresh and filters; hidden selections are counted. Select a page or all filtered completed images within the export limit.
 
-Rate cards are versioned and saved on each attempt. Prices use integer microdollars, with distinct image/text output rates where published. The Standard synchronous Images API rates were checked on **2026-11-02** against [OpenAI pricing](https://developers.openai.com/api/docs/pricing). GPT Image 2/2.5 cached-input discounts listed for the Responses API are not applied to this Images API workflow. When prices change, update the version and rates in `studioflow/pricing.py`; old receipts retain their original estimates.
+Downloads use immutable image-set identifiers and slots: `ASIN.MAIN.jpg`, `ASIN.PT01.jpg`, or SKU equivalents. Auto naming prefers a valid ASIN; explicit ASIN/SKU modes and filename previews are available. Revisions keep their slot. Conflicting filenames are blocked until the selection or naming mode changes. Imported historical images require a reviewed slot assignment before listing-format export.
 
-## Architecture
+Authenticated server ZIPs are limited to 250 images / 512 MiB and expire after one hour. Individual downloads use the same naming rules. Legacy media URLs continue to resolve through asset mappings.
 
-The application is organized by feature, with an application factory, API routers, services and browser ES modules. See [the source structure and extension guide](docs/ARCHITECTURE.md).
+## Data and recovery
 
-| Component | Responsibility |
-| --- | --- |
-| `app.py`, `studioflow/application.py` | Compatible Uvicorn entry point, application factory and worker lifecycle |
-| `studioflow/api/` | Request schemas, authentication dependencies, feature routes and HTTP responses |
-| `studioflow/services/` | Catalog, memory, render execution, A+ profiles and usage transactions |
-| `studioflow/workspace.py`, `dependencies.py` | Per-application paths, connections and request authentication |
-| `studioflow/settings.py` | Runtime configuration and explicit demo/authentication rules |
-| `studioflow/database.py`, `migrations/` | SQLite connections and the existing ordered migrations 1–4 |
-| `studioflow/jobs.py` | Atomic task claiming, worker heartbeats and recovery |
-| `studioflow/submissions.py` | Transactional request deduplication |
-| `studioflow/provider.py` | Model capabilities, image-edit requests and atomic padded exports |
-| `studioflow/pricing.py` | Versioned provider rates and usage estimates |
-| `static/js/`, `static/css/` | Browser bootstrap, shared helpers, isolated screen controllers and styles |
-| `resources/` | Downloadable catalog CSV template |
-| `deploy/`, `scripts/`, `.github/workflows/` | Production Compose configuration, release tooling and CI/CD |
+PostgreSQL holds stable product IDs, foreign keys, immutable generation specifications, layout recipes, asset metadata and usage receipts. Image bytes live in immutable private object keys. Originals, references, cutouts, masters, finished images, thumbnails and logos are separate assets. Application routes enforce authentication when serving them.
 
-Jobs and renders are committed with their submission keys. Browser retries reuse the same key after a lost response; changed submissions use a new key. Queued work survives restarts. A running request whose worker disappears is marked failed rather than retried automatically, because its provider-side result and charges may be unknown. The SDK also has automatic retries disabled. Revision corrections become permanent product rules only after approval.
+Workers claim ordered work using PostgreSQL `FOR UPDATE SKIP LOCKED` and leases. Durable response receipts allow transfers and local processing to resume. An uncertain paid request is never sent again automatically. Requests and balance checkpoints retain transaction fences and idempotency protections.
 
-SQLite and its uploads, outputs and logos form one workspace. Persist and back up the whole data directory. The current design targets a shared, single-host team workspace; `MAX_WORKERS` controls provider concurrency per process. Use one application process unless intentionally managing the aggregate provider concurrency.
+Backups pause writers, drain active work, capture a database dump and pending transfers, then resume service while immutable objects stream to encrypted Restic storage. The schedule is 03:00 Asia/Kolkata; retention is seven daily, four weekly and three monthly snapshots. An external S3 repository and a verified fresh-stack restore are required for production activation. See [architecture](docs/ARCHITECTURE.md) and [rollout evidence](docs/PLATFORM_VALIDATION.md).
 
-Once committed and enabled, pull requests run tests and a Docker smoke check on GitHub-hosted runners. Pushes to `main` run the same checks, package the tested image and deploy it on `mvserver`, using `/srv/studioflow` for persistent state. Configure the runner label and production secret described in [the deployment guide](deploy/README.md) before activating the workflow.
-
-## Feature controls and upgrades
-
-Both new views are enabled by default:
+## Feature controls
 
 ```dotenv
+STUDIOFLOW_ENABLE_CREATION=1
+STUDIOFLOW_ENABLE_COMPOSITION=1
+STUDIOFLOW_ENABLE_EXPORTS=1
 STUDIOFLOW_ENABLE_APLUS=1
 STUDIOFLOW_ENABLE_USAGE=1
+STUDIOFLOW_VALIDATED_2K_MODELS=
 ```
 
-Set a flag to `0` and restart to hide its view and disable its API. The A+ flag rejects new A+ submissions and revisions; it does not cancel already accepted work. Disabling the usage dashboard does not disable live-request receipts. Schema migrations still run with either flag disabled.
+For initial production migration, start the first three flags at `0`, then enable exports, mixed creation and finished cards in stages. Flags reject new feature submissions but preserve accepted jobs and image access. Usage receipts continue even when the usage dashboard is hidden. Set an API key and `APP_MODE=live` only for an authorized live workspace; changing mode does not create a separate queue.
 
-Migrations 3 and 4 add A+ profiles, `renders.aplus_profile_id`, the usage ledger and the checkpoint table. Existing catalog, memory, sessions and history remain in place. These migrations extend the current app's database; do not replace it with the reference app's database or source tree. The source reorganization preserves those migration versions and adds no schema change. See [the deployment guide](deploy/README.md) for backup, rollout and recovery instructions.
+Usage totals are estimates of StudioFlow activity, with unknown costs shown explicitly. They are not the provider account balance, invoice or a hard spending cap. Versioned rate cards are stored on each attempt; local derivative images do not create extra paid attempts.
 
-## Verification
+## Development and verification
 
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+Use Python 3.12/3.13 and Node 24. Install Python dependencies with `python -m pip install -r requirements.lock`.
+
+```sh
+python -m unittest discover -s tests -v
 node --test tests/frontend.test.cjs
 ```
 
-Use Node 24 for the browser tests, matching CI. No npm install or frontend build step is required for the application or its unit tests.
+The default tests use temporary SQLite compatibility workspaces and mocked image responses. Set `STUDIOFLOW_TEST_DATABASE_URL` to a **disposable PostgreSQL server with database-creation privileges** and `STUDIOFLOW_TEST_S3_ENDPOINT` to disposable SeaweedFS to exercise the real stack. Tests create/drop isolated databases and buckets with `test-access` / `test-secret-long-enough` credentials. Set `STUDIOFLOW_RESTIC`, `STUDIOFLOW_PG_DUMP`, `STUDIOFLOW_PG_RESTORE` to the tool paths for backup tests; `STUDIOFLOW_SCALE_TEST=1` enables the 100,000-record test.
 
-Tests create independent app instances with temporary databases, demo rendering and mocked provider responses. They cover catalog/authentication/queue flows, A+ snapshots and revisions, model guards, usage after failed exports, unknown costs, checkpoint boundaries, migration preservation, bundled module paths and templates, duplicate submissions and delayed browser responses. They do not make paid API calls.
+Browser acceptance tools are isolated in `tests/browser` (`npm ci`, `npx playwright install chromium`). Start `python -m scripts.browser_server` with the same disposable-service variables, then run `node tests/browser/acceptance.cjs`. Locally, `STUDIOFLOW_BROWSER_CHANNEL=msedge` can use installed Edge. These tests make no paid API requests. CI runs unit tests, real PostgreSQL/SeaweedFS integration, encrypted restoration, the scale test, browser acceptance and container smoke tests before packaging both images.
+
+SQLite/local storage remains available for disposable previews and legacy import. For a preview, explicitly set `STUDIOFLOW_LOAD_DOTENV=0`, `STUDIOFLOW_DATA_DIR` to a new directory, `APP_MODE=demo`, and private `TEAM_USERS`; launch `uvicorn app:app --host 127.0.0.1 --port 8002`. Never point a preview at a live workspace: startup resumes queued work.

@@ -1,5 +1,7 @@
 # StudioFlow — Amazon Image Production Starter
 
+> Historical starter documentation. Current installation, storage and migration instructions are in the [root README](../README.md) and [deployment runbook](DOCKER_DEPLOY.md).
+
 A team-friendly image generation and editing interface for Amazon listing assets. Supports **multiple product uploads, SKU labels, different scene prompts, generation queues, image revisions, approvals, JPG downloads, and team logins**.
 
 This is an **MVP/starter**, not a finished production system for 500–1000 final images/day. It is intended to demonstrate the workflow and trial real image generation before scaling.

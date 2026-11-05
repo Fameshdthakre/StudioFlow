@@ -25,20 +25,28 @@ class QueueTests(unittest.TestCase):
     def add_render(self, render_id, *, status="queued", worker="", job=None):
         job = job or f"job-{render_id}"
         with self.db() as c:
-            c.execute("INSERT OR IGNORE INTO jobs(id,user,kind,total) VALUES(?,?,?,?)",
-                      (job, "test-user", "main", 1))
-            c.execute("INSERT INTO renders(id,job_id,user,kind,status,worker_id,created_at) "
-                      "VALUES(?,?,?,?,?,?,?)",
-                      (render_id, job, "test-user", "main", status, worker, render_id))
+            c.execute(
+                "INSERT OR IGNORE INTO jobs(id,user,kind,total) VALUES(?,?,?,?)",
+                (job, "test-user", "main", 1),
+            )
+            c.execute(
+                "INSERT INTO renders(id,job_id,user,kind,status,worker_id,created_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (render_id, job, "test-user", "main", status, worker, render_id),
+            )
         return job
 
     def render(self, render_id):
         with self.db() as c:
-            return dict(c.execute("SELECT * FROM renders WHERE id=?", (render_id,)).fetchone())
+            return dict(
+                c.execute("SELECT * FROM renders WHERE id=?", (render_id,)).fetchone()
+            )
 
     def job_status(self, job_id):
         with self.db() as c:
-            return c.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()[0]
+            return c.execute(
+                "SELECT status FROM jobs WHERE id=?", (job_id,)
+            ).fetchone()[0]
 
     def wait_for(self, condition, timeout=5):
         deadline = time.monotonic() + timeout
@@ -112,9 +120,13 @@ class QueueTests(unittest.TestCase):
             with Image.open(source) as image:
                 image.resize((240, 240)).save(output, "JPEG")
             with self.db() as c:
-                c.execute("UPDATE renders SET status='completed',file=? WHERE id=? AND worker_id=?",
-                          (output.name, row["id"], owner))
-                c.execute("UPDATE jobs SET status='finished' WHERE id=?", (row["job_id"],))
+                c.execute(
+                    "UPDATE renders SET status='completed',file=? WHERE id=? AND worker_id=?",
+                    (output.name, row["id"], owner),
+                )
+                c.execute(
+                    "UPDATE jobs SET status='finished' WHERE id=?", (row["job_id"],)
+                )
 
         queue = RenderQueue(self.db, demo_handler, max_workers=1, poll_seconds=0.01)
         queue.start()
@@ -140,20 +152,27 @@ class QueueTests(unittest.TestCase):
         def handler(row, owner):
             calls.append(row["id"])
             started.set()
-            if not release.wait(timeout=5):
+            if not release.wait(timeout=10):
                 raise RuntimeError("Test did not release the active task")
             with self.db() as c:
-                c.execute("UPDATE renders SET status='completed' WHERE id=? AND worker_id=? AND status='running'",
-                          (row["id"], owner))
+                c.execute(
+                    "UPDATE renders SET status='completed' WHERE id=? AND worker_id=? AND status='running'",
+                    (row["id"], owner),
+                )
 
-        queue = RenderQueue(self.db, handler, max_workers=1, lease_seconds=0.18, poll_seconds=0.01)
-        observer = RenderQueue(self.db, lambda *_: None, lease_seconds=0.18)
+        # Allow filesystem/scheduler jitter while still observing multiple lease windows.
+        queue = RenderQueue(
+            self.db, handler, max_workers=1, lease_seconds=1, poll_seconds=0.01
+        )
+        observer = RenderQueue(self.db, lambda *_: None, lease_seconds=1)
         queue.start()
         stopper = None
         try:
             self.assertTrue(started.wait(timeout=5))
             with self.db() as c:
-                initial_heartbeat = c.execute("SELECT heartbeat FROM workers WHERE id=?", (queue.owner,)).fetchone()[0]
+                initial_heartbeat = c.execute(
+                    "SELECT heartbeat FROM workers WHERE id=?", (queue.owner,)
+                ).fetchone()[0]
 
             def stop_queue():
                 queue.stop()
@@ -163,14 +182,16 @@ class QueueTests(unittest.TestCase):
             stopper.start()
             self.wait_for(lambda: queue.stopping.is_set())
             # More than twice the lease duration: an unmaintained owner expires.
-            deadline = time.monotonic() + 0.45
+            deadline = time.monotonic() + 2.2
             while time.monotonic() < deadline:
                 observer.recover()
                 self.assertEqual(self.render("active")["status"], "running")
                 self.assertFalse(stop_finished.is_set())
                 time.sleep(0.02)
             with self.db() as c:
-                heartbeat = c.execute("SELECT heartbeat FROM workers WHERE id=?", (queue.owner,)).fetchone()[0]
+                heartbeat = c.execute(
+                    "SELECT heartbeat FROM workers WHERE id=?", (queue.owner,)
+                ).fetchone()[0]
             self.assertGreater(heartbeat, initial_heartbeat)
             self.assertEqual(self.render("waiting")["status"], "queued")
         finally:
@@ -194,8 +215,10 @@ class QueueTests(unittest.TestCase):
             if row["id"] == "broken":
                 raise RuntimeError("Unexpected handler failure")
             with self.db() as c:
-                c.execute("UPDATE renders SET status='completed' WHERE id=? AND worker_id=?",
-                          (row["id"], owner))
+                c.execute(
+                    "UPDATE renders SET status='completed' WHERE id=? AND worker_id=?",
+                    (row["id"], owner),
+                )
 
         queue = RenderQueue(self.db, handler, max_workers=1, poll_seconds=0.01)
         with self.assertLogs("studioflow.jobs", level="ERROR") as logged:
@@ -204,7 +227,9 @@ class QueueTests(unittest.TestCase):
                 self.wait_for(lambda: self.render("following")["status"] == "completed")
             finally:
                 queue.stop()
-        self.assertTrue(any("Render handler failed for broken" in line for line in logged.output))
+        self.assertTrue(
+            any("Render handler failed for broken" in line for line in logged.output)
+        )
         self.assertEqual(self.render("broken")["status"], "failed")
         self.assertEqual(self.job_status(failed_job), "finished")
         self.assertIn("Check server logs", self.render("broken")["error"])
@@ -223,6 +248,66 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(row["status"], "running")
         self.assertEqual(row["worker_id"], "replacement")
         self.assertEqual(row["error"], "")
+
+    def test_failed_auxiliary_pass_is_consumed_once_and_later_pass_recovers(self):
+        recovered = threading.Event()
+        calls = []
+
+        def auxiliary(owner):
+            calls.append(owner)
+            if len(calls) == 1:
+                raise RuntimeError("Temporary transfer failure")
+            recovered.set()
+
+        queue = RenderQueue(
+            self.db,
+            lambda *_: None,
+            auxiliary=auxiliary,
+            lease_seconds=3,
+            poll_seconds=0.01,
+        )
+        with self.assertLogs("studioflow.jobs", level="ERROR") as logged:
+            queue.start()
+            try:
+                self.assertTrue(recovered.wait(timeout=5))
+            finally:
+                queue.stop()
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(len(logged.records), 1)
+        self.assertIn("Background transfer/export pass failed", logged.output[0])
+        self.assertIn("Temporary transfer failure", logged.output[0])
+
+    def test_blocked_dispatcher_does_not_stop_lease_renewal(self):
+        started, release, blocked, unblock = (threading.Event() for _ in range(4))
+        self.add_render("active")
+
+        def handler(row, owner):
+            started.set()
+            release.wait(timeout=10)
+
+        queue = RenderQueue(
+            self.db, handler, max_workers=1, lease_seconds=1, poll_seconds=0.01
+        )
+        real_recover = queue.recover
+
+        def slow_recover():
+            if started.is_set():
+                blocked.set()
+                unblock.wait(timeout=10)
+            real_recover()
+
+        queue.recover = slow_recover
+        observer = RenderQueue(self.db, lambda *_: None, lease_seconds=1)
+        queue.start()
+        try:
+            self.assertTrue(blocked.wait(timeout=5))
+            time.sleep(1.2)
+            observer.recover()
+            self.assertEqual(self.render("active")["status"], "running")
+        finally:
+            unblock.set()
+            release.set()
+            queue.stop()
 
 
 if __name__ == "__main__":

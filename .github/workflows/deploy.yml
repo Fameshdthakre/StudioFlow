@@ -21,7 +21,7 @@ jobs:
     # Label the existing mvserver runner; PRs run only on GitHub-hosted runners.
     runs-on: [self-hosted, linux, x64, studioflow-production]
     environment: production
-    timeout-minutes: 30
+    timeout-minutes: 180
     concurrency:
       group: studioflow-production
       cancel-in-progress: false
@@ -53,4 +53,3 @@ jobs:
         if: success()
         shell: bash
         run: echo 'Deployment finished or skipped because a newer main revision exists. Check the deploy step for the outcome.' >> "$GITHUB_STEP_SUMMARY"
-

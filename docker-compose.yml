@@ -1,11 +1,25 @@
 services:
+  storage-init:
+    extends:
+      file: deploy/compose.infrastructure.yml
+      service: storage-init
+  postgres:
+    extends:
+      file: deploy/compose.infrastructure.yml
+      service: postgres
+  seaweedfs:
+    extends:
+      file: deploy/compose.infrastructure.yml
+      service: seaweedfs
   studioflow:
-    build: .
-    container_name: studioflow
+    build:
+      context: .
+      target: runtime
+    image: studioflow:local
     restart: unless-stopped
     stop_grace_period: 240s
     env_file:
-      - .env
+      - ${STUDIOFLOW_ENV_FILE:-.env.platform}
     environment:
       # These override .env: network containers always require accounts.
       STUDIOFLOW_REQUIRE_AUTH: "1"
@@ -13,8 +27,38 @@ services:
       STUDIOFLOW_LOAD_DOTENV: "0"
       STUDIOFLOW_DATA_DIR: /app/data
     ports:
-      - "${STUDIOFLOW_BIND_ADDRESS:-127.0.0.1}:8000:8000"
+      - "${STUDIOFLOW_BIND_ADDRESS:-127.0.0.1}:${STUDIOFLOW_PORT:-8001}:8000"
     volumes:
-      # Persistent storage for sqlite database, uploads, logos, and generated images
-      - ./data:/app/data
-
+      - workspace:/app/data
+    networks: [platform]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_started
+  ops:
+    build:
+      context: .
+      target: operations
+    image: studioflow-ops:local
+    profiles: [tools]
+    env_file: ["${STUDIOFLOW_ENV_FILE:-.env.platform}"]
+    environment:
+      STUDIOFLOW_LOAD_DOTENV: "0"
+      STUDIOFLOW_DATA_DIR: /app/data
+      RESTIC_PASSWORD_FILE: /run/secrets/restic-password
+    volumes:
+      - workspace:/app/data
+      # Mount the directory so init can run before a backup password is supplied.
+      - ${STUDIOFLOW_SECRETS_PATH:-./.secrets}:/run/secrets:ro
+      - ${STUDIOFLOW_IMPORT_PATH:-./.migration}:/migration:ro
+    networks: [platform]
+    entrypoint: [python, -m, studioflow.operations.cli]
+    command: [preflight, --local-test]
+networks:
+  platform:
+    name: ${STUDIOFLOW_NETWORK:-studioflow-local-platform}
+volumes:
+  postgres:
+  seaweedfs:
+  workspace:

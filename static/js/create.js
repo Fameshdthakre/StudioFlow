@@ -1,4 +1,5 @@
 import { escapeHtml } from './dom.js';
+import { createPlanScreen } from './create_v2.js';
 
 export function createImageScreen({
   ui,
@@ -15,6 +16,7 @@ export function createImageScreen({
   const { document, URL, FormData, confirm } = environment;
   const api = (...args) => client.request(...args);
   const { requestKey, fileId } = submissions;
+  const modern = createPlanScreen({ ui, client, config, submissions, setView, loadJobs, loadStats, environment });
   let products = [],
     kind = 'lifestyle',
     isSubmitting = false;
@@ -75,6 +77,7 @@ export function createImageScreen({
   }
 
   function recalc() {
+    if (config.features?.creation) return modern.recalc();
     const n = sceneCount();
     $('scene-count').textContent = n + ' scene' + (n !== 1 ? 's' : '');
     $('estimated-count').textContent = assignedCount().toLocaleString('en-IN');
@@ -132,6 +135,7 @@ export function createImageScreen({
   }
 
   async function addFiles(files) {
+    if (config.features?.creation) return modern.addFiles(files);
     const added = [];
     for (const file of files) {
       if (products.length >= (config.max_products || 50)) {
@@ -194,6 +198,7 @@ export function createImageScreen({
   }
 
   async function generate() {
+    if (config.features?.creation) return modern.generate();
     if (isSubmitting) return;
     const error = generationError();
     if (error) return toast(error, true);
@@ -265,6 +270,7 @@ export function createImageScreen({
     zone.addEventListener('drop', (e) => addFiles([...e.dataTransfer.files]));
     for (const button of document.querySelectorAll('.type-option'))
       button.addEventListener('click', () => {
+        if (config.features?.creation) return modern.toggleType(button.dataset.kind);
         kind = button.dataset.kind;
         for (const option of document.querySelectorAll('.type-option'))
           option.classList.toggle('selected', option === button);

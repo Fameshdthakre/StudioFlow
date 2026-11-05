@@ -1,0 +1,24 @@
+services:
+  ops:
+    image: ${STUDIOFLOW_OPS_IMAGE:?Set the tested operations image}
+    env_file: ["${STUDIOFLOW_ENV_FILE:?Set private runtime environment file}"]
+    environment:
+      STUDIOFLOW_LOAD_DOTENV: "0"
+      STUDIOFLOW_DATA_DIR: /app/data
+      RESTIC_PASSWORD_FILE: /run/secrets/restic-password
+    volumes:
+      - /srv/studioflow/data:/app/data
+      - /srv/studioflow/migration:/migration
+      - /srv/studioflow/secrets:/run/secrets:ro
+    networks: [platform]
+    entrypoint: [python, -m, studioflow.operations.cli]
+    command: [preflight]
+  backups:
+    extends: ops
+    profiles: [backups]
+    restart: unless-stopped
+    command: [scheduler]
+networks:
+  platform:
+    external: true
+    name: ${STUDIOFLOW_NETWORK:-studioflow-platform}

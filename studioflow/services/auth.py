@@ -16,7 +16,6 @@ def get_session_user(workspace, token):
         if not row:
             return None
         if row["user"] not in workspace.settings.team or row["expires_at"] < now():
-            c.execute("DELETE FROM sessions WHERE token=?", (token,))
             return None
         return row["user"]
 

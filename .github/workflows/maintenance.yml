@@ -1,0 +1,41 @@
+name: Explicit StudioFlow platform maintenance
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Prepare keeps the old app running. Migrate stops it until verified activation and resume."
+        type: choice
+        required: true
+        options: [prepare, migrate, backup, activate, resume, status]
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ci.yml
+    with:
+      package_release: true
+  maintenance:
+    needs: verify
+    runs-on: [self-hosted, linux, x64, studioflow-production]
+    environment: production-maintenance
+    timeout-minutes: 180
+    concurrency:
+      group: studioflow-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: studioflow-${{ github.sha }}
+          path: ${{ runner.temp }}/studioflow-maintenance-${{ github.run_id }}
+      - name: Perform the selected maintenance stage
+        shell: bash
+        env:
+          RELEASE_BUNDLE: ${{ runner.temp }}/studioflow-maintenance-${{ github.run_id }}
+          RELEASE_SHA: ${{ github.sha }}
+          MAINTENANCE_ACTION: ${{ inputs.action }}
+          PROD_ENV_FILE: ${{ secrets.PROD_ENV_FILE }}
+        run: |
+          set -euo pipefail
+          python3 "$RELEASE_BUNDLE/maintenance.py" --bundle "$RELEASE_BUNDLE" \
+            --revision "$RELEASE_SHA" --action "$MAINTENANCE_ACTION"

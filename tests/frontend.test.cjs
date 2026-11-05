@@ -475,9 +475,20 @@ test('quality choices follow the shared model capabilities in every selector', (
   h.config.models = [
     { id: 'gpt-image-2.5-flare', qualities: ['low', 'medium', 'high', 'xhigh', 'max', 'auto'] },
     { id: 'gpt-image-1-mini', qualities: ['low', 'medium', 'high', 'auto'] },
+    { id: 'gpt-image-2.6-flare', qualities: ['low', 'medium', 'high', 'xhigh', 'max', 'auto'] },
+    { id: 'gpt-image-2.6-sunburst', qualities: ['low', 'medium', 'high', 'xhigh', 'max', 'auto'] },
   ];
   for (const prefix of ['', 'aplus-', 'revision-']) {
     h.models.syncModelChoices(prefix + 'model', prefix + 'quality', 'gpt-image-2.5-flare', 'high');
+    assert.deepEqual(
+      h.get(prefix + 'model').children.map((x) => x.value),
+      h.config.models.map((x) => x.id),
+    );
+    for (const model of ['gpt-image-2.6-flare', 'gpt-image-2.6-sunburst']) {
+      h.get(prefix + 'model').value = model;
+      h.get(prefix + 'model').onchange();
+      assert.ok(h.get(prefix + 'quality').children.some((x) => x.value === 'max'));
+    }
     h.get(prefix + 'quality').value = 'max';
     h.get(prefix + 'model').value = 'gpt-image-1-mini';
     h.get(prefix + 'model').onchange();

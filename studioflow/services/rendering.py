@@ -13,6 +13,7 @@ from ..provider import (
     PRESETS,
     render_live,
     validate_settings,
+    validate_native_size,
 )
 from ..settings import MAX_BATCH_BYTES, MAX_IMAGE_BYTES, MAX_IMAGES, MAX_PENDING_IMAGES
 from ..submissions import fingerprint, remember, replay, validate_key
@@ -20,6 +21,13 @@ from . import aplus, usage
 from .catalog import canonical_sku, resolve_product_sku
 from .common import audit, now, owned
 from .memory import BASE_RULES, memory_snapshot
+from ..persistence.repository import (
+    ensure_product,
+    next_sequence,
+    link_asset,
+    link_snapshot,
+)
+from . import assets, maintenance
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +136,7 @@ def save_image_to_png(raw, path):
                 raise HTTPException(400, "Image is too small (minimum 120px per side)")
             if img.width * img.height > 45_000_000:
                 raise HTTPException(400, "Image dimensions are too large")
-            ImageOps.exif_transpose(img).convert("RGB").save(path, "PNG")
+            ImageOps.exif_transpose(img).convert("RGBA").save(path, "PNG")
     except HTTPException:
         raise
     except Exception:
@@ -169,12 +177,16 @@ def render_demo(source, target, kind, scene, canvas):
 def finish_job(c, job_id):
     c.execute(
         "UPDATE jobs SET status='finished' WHERE id=? AND NOT EXISTS "
-        "(SELECT 1 FROM renders WHERE job_id=? AND status IN ('queued','running'))",
+        "(SELECT 1 FROM renders WHERE job_id=? AND status IN ('queued','running','transferring'))",
         (job_id, job_id),
     )
 
 
 def generate_one(workspace, r, owner):
+    if "enqueue_seq" in r:
+        from .pipeline import execute
+
+        return execute(workspace, r, owner)
     output = workspace.outputs / f"{r['id']}.jpg"
     attempt = None
 
@@ -255,7 +267,7 @@ def validate_render_settings(model, quality, canvas):
 
 def check_capacity(c, count):
     pending = c.execute(
-        "SELECT COUNT(*) FROM renders WHERE status IN ('queued','running')"
+        "SELECT COUNT(*) FROM renders WHERE status IN ('queued','running','transferring')"
     ).fetchone()[0]
     if pending + count > MAX_PENDING_IMAGES:
         raise HTTPException(
@@ -388,12 +400,17 @@ def generate(
         if previous:
             return previous
     saved = []
+    source_assets = {}
     committed = False
     try:
         for raw in raw_images:
             filename = f"{uuid.uuid4().hex}.png"
             saved.append(filename)
             save_image_to_png(raw, workspace.uploads / filename)
+            source_assets[filename] = assets.upload(
+                workspace, raw, "product_reference", user
+            )["asset_id"]
+            assets.map_legacy(workspace, "uploads/" + filename, source_assets[filename])
         job_id = uuid.uuid4().hex
         result = {
             "job_id": job_id,
@@ -402,6 +419,7 @@ def generate(
         }
         with workspace.db() as c:
             c.execute("BEGIN IMMEDIATE")
+            maintenance.require_writable(c)
             previous = replay(c, user, idempotency_key, "generate", digest)
             if previous:
                 return previous
@@ -413,12 +431,38 @@ def generate(
             )
             for index, source in enumerate(saved):
                 sku = resolve_product_sku(c, sku_list[index])
+                product_id = ensure_product(c, sku)
                 snapshot = memory_snapshot(workspace, sku, connection=c)
                 if profile:
                     snapshot = json.dumps(
                         {**json.loads(snapshot), "aplus": profile}, ensure_ascii=False
                     )
-                for scene in per_product[index]:
+                image_set_id = uuid.uuid4().hex
+                asin = (json.loads(snapshot).get("catalog") or {}).get("asin", "")
+                spec = {
+                    "version": 1,
+                    "legacy_request": True,
+                    "kind": kind,
+                    "scenes": per_product[index],
+                    "model": model,
+                    "quality": quality,
+                    "canvas": canvas,
+                    "source_asset_id": source_assets[source],
+                    "memory_snapshot": json.loads(snapshot),
+                }
+                c.execute(
+                    "INSERT INTO image_sets(id,product_id,job_id,sku,asin,spec_json,created_at) VALUES(?,?,?,?,?,?,?)",
+                    (
+                        image_set_id,
+                        product_id,
+                        job_id,
+                        sku,
+                        asin,
+                        json.dumps(spec),
+                        now(),
+                    ),
+                )
+                for scene_index, scene in enumerate(per_product[index]):
                     if len(make_prompt(kind, scene, snapshot)) > 32000:
                         raise HTTPException(
                             400,
@@ -444,6 +488,27 @@ def generate(
                             snapshot,
                         ),
                     )
+                    asin = (json.loads(snapshot).get("catalog") or {}).get("asin", "")
+                    variant = (
+                        ("MAIN" if len(per_product[index]) == 1 else "")
+                        if kind == "main"
+                        else f"PT{scene_index + 1:02}"
+                    )
+                    c.execute(
+                        "UPDATE renders SET enqueue_seq=?,product_id=?,source_asset_id=?,variant=?,sku_snapshot=?,asin_snapshot=?,image_set_id=? WHERE id=?",
+                        (
+                            next_sequence(c),
+                            product_id,
+                            source_assets[source],
+                            variant,
+                            sku,
+                            asin,
+                            image_set_id,
+                            render_id,
+                        ),
+                    )
+                    link_asset(c, source_assets[source], "render", render_id)
+                    link_snapshot(c, json.loads(snapshot), render_id)
                     if profile:
                         c.execute(
                             "UPDATE renders SET aplus_profile_id=? WHERE id=?",
@@ -465,6 +530,7 @@ def revise(workspace, body, idempotency_key, user):
     digest = fingerprint(body.model_dump())
     with workspace.db() as c:
         c.execute("BEGIN IMMEDIATE")
+        maintenance.require_writable(c)
         previous = replay(c, user, idempotency_key, "revise", digest)
         if previous:
             return previous
@@ -477,6 +543,15 @@ def revise(workspace, body, idempotency_key, user):
         if parent["kind"] == "aplus" and not workspace.settings.enable_aplus:
             raise HTTPException(404, "A+ Studio is disabled")
         validate_render_settings(body.model, body.quality, parent["canvas"])
+        try:
+            validate_native_size(
+                body.model,
+                parent["canvas"],
+                parent["native_size"],
+                workspace.settings.validated_high_res_models,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         check_capacity(c, 1)
         sku = resolve_product_sku(c, parent["sku"])
         snapshot = memory_snapshot(workspace, sku, connection=c)
@@ -523,6 +598,32 @@ def revise(workspace, body, idempotency_key, user):
                 body.instructions.strip() if body.remember_rule else "",
             ),
         )
+        for field in (
+            "product_id",
+            "image_set_id",
+            "source_asset_id",
+            "variant",
+            "sku_snapshot",
+            "asin_snapshot",
+            "references_json",
+            "recipe_json",
+            "native_size",
+        ):
+            c.execute(f"UPDATE renders SET {field}=? WHERE id=?", (parent[field], rid))
+        # MAIN's cutout arrangement is not a graphic-card recipe. A paid
+        # revision edits the existing image and must not enter card composition.
+        if parent["kind"] == "main":
+            c.execute("UPDATE renders SET recipe_json='{}' WHERE id=?", (rid,))
+        c.execute(
+            "UPDATE renders SET enqueue_seq=? WHERE id=?", (next_sequence(c), rid)
+        )
+        link_asset(c, parent["source_asset_id"], "render", rid)
+        link_asset(c, parent["master_asset_id"], "revision_source", rid)
+        for reference in json.loads(parent["references_json"] or "[]"):
+            link_asset(c, reference["asset_id"], "render", rid)
+        recipe = json.loads(parent["recipe_json"] or "{}")
+        link_asset(c, recipe.get("cutout_asset_id"), "render", rid)
+        link_snapshot(c, json.loads(snapshot), rid)
         if parent["kind"] == "aplus":
             c.execute(
                 "UPDATE renders SET aplus_profile_id=? WHERE id=?",
@@ -544,7 +645,7 @@ def renders(workspace, user):
         rows = [
             dict(x)
             for x in c.execute(
-                "SELECT * FROM renders ORDER BY created_at DESC, rowid DESC LIMIT 300"
+                "SELECT * FROM renders ORDER BY created_at DESC, enqueue_seq DESC LIMIT 300"
             )
         ]
     for r in rows:
@@ -587,15 +688,31 @@ def approve(workspace, rid, body, user):
         if row["status"] != "completed":
             raise HTTPException(400, "Image not ready")
         c.execute("UPDATE renders SET approved=? WHERE id=?", (int(body.approved), rid))
+        c.execute(
+            "INSERT INTO approvals(id,render_id,user,approved,created_at) VALUES(?,?,?,?,?)",
+            (uuid.uuid4().hex, rid, user, int(body.approved), now()),
+        )
         if body.approved and row["pending_rule"]:
             sku = resolve_product_sku(c, row["sku"])
             c.execute(
-                "INSERT OR IGNORE INTO product_memory(sku,facts,updated_by,updated_at) VALUES(?,?,?,?)",
+                "INSERT INTO product_memory(sku,facts,updated_by,updated_at) VALUES(?,?,?,?) ON CONFLICT(sku) DO NOTHING",
                 (sku, "", user, now()),
             )
             c.execute(
-                "INSERT INTO product_rules VALUES(?,?,?,?,?,?)",
-                (uuid.uuid4().hex, sku, row["pending_rule"], user, now(), rid),
+                "INSERT INTO product_rules(id,sku,instruction,created_by,created_at,source_render_id,product_id) VALUES(?,?,?,?,?,?,?)",
+                (
+                    uuid.uuid4().hex,
+                    sku,
+                    row["pending_rule"],
+                    user,
+                    now(),
+                    rid,
+                    ensure_product(c, sku),
+                ),
+            )
+            c.execute(
+                "UPDATE product_memory SET product_id=? WHERE sku=?",
+                (ensure_product(c, sku), sku),
             )
             c.execute("UPDATE renders SET pending_rule='' WHERE id=?", (rid,))
             audit(c, user, "approved_revision_saved_as_rule", sku, row["pending_rule"])

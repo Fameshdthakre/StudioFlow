@@ -1,5 +1,7 @@
 # StudioFlow Self-Hosted GitHub Actions Runner & Auto-Deploy Setup (mvserver)
 
+> The deployment architecture below describes the older SQLite release. Keep the existing runner and its `studioflow-production` label, then use the current [platform deployment runbook](DOCKER_DEPLOY.md) for PostgreSQL, SeaweedFS, maintenance gates and backups. Current deployment downloads tested artifacts without checking out the repository on mvserver.
+
 This guide walks you through registering a dedicated GitHub Actions Self-Hosted Runner on **`mvserver`** and configuring continuous automated deployment for **StudioFlow**.
 
 ---

@@ -1,0 +1,55 @@
+# Start this as its own persistent Compose project in production.
+services:
+  storage-init:
+    image: postgres:18-bookworm@sha256:5c4783a8cc3f0074912164f94dfa1be4e043438f0f707cf968d7af9a0d31a2c8
+    entrypoint: [sh, -c, "chown 10002:10002 /objects"]
+    volumes: [seaweedfs:/objects]
+    networks: [platform]
+  postgres:
+    image: postgres:18-bookworm@sha256:5c4783a8cc3f0074912164f94dfa1be4e043438f0f707cf968d7af9a0d31a2c8
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: studioflow
+      POSTGRES_USER: studioflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a private database password}
+      PGDATA: /var/lib/postgresql/18/data
+    volumes: [postgres:/var/lib/postgresql]
+    networks: [platform]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U studioflow -d studioflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    stop_grace_period: 120s
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.52@sha256:57877e32bb90073b37dc109b438ba66e84fd5ed9ced5f5c04f56444ef243ce59
+    command:
+      [
+        mini,
+        "-dir=/data",
+        "-ip=seaweedfs",
+        "-ip.bind=0.0.0.0",
+        "-admin.ui=false",
+        "-webdav=false",
+        "-s3.port.iceberg=0",
+        "-s3.port.lance=0",
+        "-master.telemetry=false",
+      ]
+    user: "10002:10002"
+    restart: unless-stopped
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?Set private object-storage credentials}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?Set private object-storage credentials}
+    volumes: [seaweedfs:/data]
+    networks: [platform]
+    stop_grace_period: 120s
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
+    # No S3, filer, volume or master port is published on the host.
+networks:
+  platform:
+    name: ${STUDIOFLOW_NETWORK:-studioflow-platform}
+volumes:
+  postgres:
+  seaweedfs:

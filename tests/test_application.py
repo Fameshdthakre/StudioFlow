@@ -16,6 +16,31 @@ from tests.support import isolated_app
 
 
 class ApplicationTests(unittest.TestCase):
+    def test_config_offers_all_undated_screenshot_models(self):
+        with isolated_app() as (_, client):
+            config = client.get("/api/config").json()
+            models = {item["id"]: item for item in config["models"]}
+            self.assertEqual(
+                set(models),
+                {
+                    "chatgpt-image-latest",
+                    "gpt-image-1-mini",
+                    "gpt-image-1.5",
+                    "gpt-image-2",
+                    "gpt-image-2.5-flare",
+                    "gpt-image-2.5-sunburst",
+                    "gpt-image-2.6-flare",
+                    "gpt-image-2.6-sunburst",
+                },
+            )
+            for model in ("gpt-image-2.6-flare", "gpt-image-2.6-sunburst"):
+                self.assertIn("2.6", models[model]["label"])
+                self.assertEqual(
+                    models[model]["qualities"],
+                    ["low", "medium", "high", "xhigh", "max", "auto"],
+                )
+                self.assertFalse(models[model]["native_2k"])
+
     def test_explicit_factory_does_not_load_environment_or_create_data(self):
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory) / "not-created"
@@ -79,7 +104,7 @@ class ApplicationTests(unittest.TestCase):
                     r"from\s+['\"](\./[^'\"]+\.js)['\"]", response.text
                 ):
                     pending.append(url.rsplit("/", 1)[0] + "/" + relative[2:])
-            self.assertEqual(len(visited), 11)
+            self.assertEqual(len(visited), 13)
             response = client.get("/api/catalog/template")
             self.assertEqual(response.status_code, 200)
             rows = list(csv.DictReader(io.StringIO(response.text)))

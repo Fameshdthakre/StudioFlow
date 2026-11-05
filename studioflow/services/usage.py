@@ -17,6 +17,7 @@ def now():
 def begin_attempt(db, render):
     attempt = uuid.uuid4().hex
     with db() as c:
+        c.execute("BEGIN IMMEDIATE")
         c.execute(
             "INSERT INTO usage_ledger(attempt_id,render_id,job_id,user,model,kind,rate_card_version,rates_json,started_at) VALUES(?,?,?,?,?,?,?,?,?)",
             (
@@ -91,8 +92,8 @@ def summary(db):
         c.execute("BEGIN")  # All dashboard totals describe the same database snapshot.
         totals = dict(
             c.execute("""SELECT COUNT(*) requests, COALESCE(SUM(cost_microusd),0) cost,
-            COALESCE(SUM(cost_microusd IS NULL),0) unreported,
-            COALESCE(SUM(status IN ('started','response_received')),0) pending,
+            COALESCE(SUM(CASE WHEN cost_microusd IS NULL THEN 1 ELSE 0 END),0) unreported,
+            COALESCE(SUM(CASE WHEN status IN ('started','response_received') THEN 1 ELSE 0 END),0) pending,
             COALESCE(SUM(image_input_tokens),0) image_input_tokens, COALESCE(SUM(text_input_tokens),0) text_input_tokens,
             COALESCE(SUM(image_output_tokens),0) image_output_tokens, COALESCE(SUM(text_output_tokens),0) text_output_tokens,
             MIN(started_at) tracking_since FROM usage_ledger""").fetchone()
@@ -100,7 +101,7 @@ def summary(db):
         groups = {}
         for group in ("user", "model"):
             rows = c.execute(f"""SELECT {group},COUNT(*) requests,COALESCE(SUM(cost_microusd),0) cost,
-                SUM(cost_microusd IS NULL) unreported FROM usage_ledger GROUP BY {group} ORDER BY cost DESC""").fetchall()
+                SUM(CASE WHEN cost_microusd IS NULL THEN 1 ELSE 0 END) unreported FROM usage_ledger GROUP BY {group} ORDER BY cost DESC""").fetchall()
             groups["by_" + group] = [
                 {
                     group: row[group],

@@ -4,6 +4,7 @@ import io
 import json
 import re
 import sqlite3
+from sqlalchemy.exc import IntegrityError
 import uuid
 
 from fastapi import HTTPException
@@ -11,6 +12,8 @@ from PIL import Image, ImageOps
 
 from .catalog import find_catalog_product, resolve_product_sku
 from .common import audit, now
+from ..persistence.repository import ensure_product
+from . import assets
 
 HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -62,6 +65,7 @@ def memory_snapshot(workspace, sku, extra_rule="", connection=None):
                 "body_font",
                 "visual_style",
                 "brand_rules",
+                "logo_file",
             )
         }
         if br
@@ -136,7 +140,7 @@ def put_company_memory(workspace, body, user):
 
 def list_brands(workspace, user):
     with workspace.db() as c:
-        rows = c.execute("SELECT * FROM brands ORDER BY name COLLATE NOCASE").fetchall()
+        rows = c.execute("SELECT * FROM brands ORDER BY LOWER(name)").fetchall()
     return [brand_payload(r) for r in rows]
 
 
@@ -164,7 +168,7 @@ def create_brand(workspace, body, user):
                     now(),
                 ),
             )
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, IntegrityError):
             raise HTTPException(409, "A brand with this name already exists")
         audit(c, user, "brand_created", "", name)
     return {"ok": True, "id": bid}
@@ -194,7 +198,7 @@ def update_brand(workspace, bid, body, user):
                     bid,
                 ),
             )
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, IntegrityError):
             raise HTTPException(409, "A brand with this name already exists")
         audit(c, user, "brand_updated", "", name)
     return {"ok": True, "id": bid}
@@ -227,15 +231,16 @@ def upload_brand_logo(workspace, bid, file, user):
             logo.save(workspace.brand_logos / filename, "PNG")
     except Exception:
         raise HTTPException(400, "Upload a valid PNG, JPG or WEBP logo")
+    assets.publish_logo(
+        workspace, raw, workspace.brand_logos / filename, user, "brand", bid
+    )
     with workspace.db() as c:
         c.execute(
             "UPDATE brands SET logo_file=?,updated_by=?,updated_at=? WHERE id=?",
             (filename, user, now(), bid),
         )
         audit(c, user, "brand_logo_uploaded", "", bid)
-    old = previous["logo_file"]
-    if old and old != filename and (workspace.brand_logos / old).exists():
-        (workspace.brand_logos / old).unlink()
+    # Accepted snapshots may still reference previous logos; retain them.
     return {"ok": True, "logo_url": f"/api/memory/brands/{bid}/logo"}
 
 
@@ -245,9 +250,9 @@ def get_brand_logo(workspace, bid, user):
     if not r or not r["logo_file"]:
         raise HTTPException(404, "Brand logo not found")
     filename = r["logo_file"]
-    if (
-        not re.fullmatch(r"[0-9a-f]{32}\.png", filename)
-        or not (workspace.brand_logos / filename).is_file()
+    if not re.fullmatch(r"[0-9a-f]{32}\.png", filename) or not (
+        (workspace.brand_logos / filename).is_file()
+        or assets.legacy_id(workspace, "brand_logos/" + filename)
     ):
         raise HTTPException(404, "Brand logo not found")
     return workspace.brand_logos / filename
@@ -262,12 +267,16 @@ def assign_brand(workspace, sku, body, user):
         if bid and not c.execute("SELECT 1 FROM brands WHERE id=?", (bid,)).fetchone():
             raise HTTPException(404, "Brand not found")
         c.execute(
-            "INSERT OR IGNORE INTO product_memory(sku,facts,updated_by,updated_at) VALUES(?,?,?,?)",
+            "INSERT INTO product_memory(sku,facts,updated_by,updated_at) VALUES(?,?,?,?) ON CONFLICT(sku) DO NOTHING",
             (key, "", user, now()),
         )
         c.execute(
             "UPDATE product_memory SET brand_id=?,updated_by=?,updated_at=? WHERE sku=?",
-            (bid, user, now(), key),
+            (bid or None, user, now(), key),
+        )
+        c.execute(
+            "UPDATE product_memory SET product_id=? WHERE sku=?",
+            (ensure_product(c, key), key),
         )
         audit(c, user, "sku_brand_assigned", key, bid or "(none)")
     return {"ok": True, "sku": key, "brand_id": bid}
@@ -322,11 +331,16 @@ def get_product_memory(workspace, sku, user):
 
 def put_product_memory(workspace, sku, body, user):
     with workspace.db() as c:
+        c.execute("BEGIN IMMEDIATE")
         key = resolve_product_sku(c, sku)
         c.execute(
             """INSERT INTO product_memory(sku,facts,updated_by,updated_at) VALUES(?,?,?,?)
         ON CONFLICT(sku) DO UPDATE SET facts=excluded.facts,updated_by=excluded.updated_by,updated_at=excluded.updated_at""",
             (key, body.facts.strip(), user, now()),
+        )
+        c.execute(
+            "UPDATE product_memory SET product_id=? WHERE sku=?",
+            (ensure_product(c, key), key),
         )
         audit(c, user, "sku_facts_updated", key, body.facts)
     return {"ok": True, "sku": key}
@@ -335,15 +349,19 @@ def put_product_memory(workspace, sku, body, user):
 def add_product_rule(workspace, sku, body, user):
     rid = uuid.uuid4().hex
     with workspace.db() as c:
+        c.execute("BEGIN IMMEDIATE")
         key = resolve_product_sku(c, sku)
         c.execute(
-            "INSERT OR IGNORE INTO product_memory(sku,facts,updated_by,updated_at) VALUES(?,?,?,?)",
+            "INSERT INTO product_memory(sku,facts,updated_by,updated_at) VALUES(?,?,?,?) ON CONFLICT(sku) DO NOTHING",
             (key, "", user, now()),
         )
         c.execute(
-            "INSERT INTO product_rules VALUES (?,?,?,?,?,?)",
-            (rid, key, body.instruction.strip(), user, now(), ""),
+            "INSERT INTO product_rules(id,sku,instruction,created_by,created_at,source_render_id) VALUES (?,?,?,?,?,?)",
+            (rid, key, body.instruction.strip(), user, now(), None),
         )
+        pid = ensure_product(c, key)
+        c.execute("UPDATE product_memory SET product_id=? WHERE sku=?", (pid, key))
+        c.execute("UPDATE product_rules SET product_id=? WHERE id=?", (pid, rid))
         audit(c, user, "sku_rule_added", key, body.instruction)
     return {"ok": True, "id": rid}
 

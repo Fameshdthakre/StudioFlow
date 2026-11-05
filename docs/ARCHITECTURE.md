@@ -1,93 +1,72 @@
 # StudioFlow architecture
 
-The source reorganization is implemented. StudioFlow remains one FastAPI application with a shared SQLite workspace and a plain JavaScript browser interface. Start it with the existing `uvicorn app:app` command; the API URLs and database schema are unchanged.
+StudioFlow is one FastAPI application with feature services, PostgreSQL records, private object storage and a plain JavaScript interface. Workers run inside the application process; their leases and queues live in PostgreSQL. Infrastructure has its own persistent Docker project, separate from application replacement.
 
 ```text
-StudioFlow/
-├── app.py                         # Uvicorn compatibility entry point
-├── studioflow/
-│   ├── application.py             # create_app(settings), lifespan, routers
-│   ├── workspace.py               # Per-app settings, paths and connection factory
-│   ├── dependencies.py            # Request workspace and authenticated user
-│   ├── settings.py                # Environment validation and submission limits
-│   ├── database.py                # Connections and ordered migration runner
-│   ├── migrations/
-│   │   ├── base.py                # Original schema
-│   │   ├── v001_workspace.py
-│   │   ├── v002_catalog_uniqueness.py
-│   │   ├── v003_aplus.py
-│   │   └── v004_usage.py
-│   ├── api/                       # Validation schemas and HTTP endpoints
-│   │   ├── auth.py
-│   │   ├── system.py
-│   │   ├── catalog.py
-│   │   ├── memory.py
-│   │   ├── renders.py
-│   │   ├── aplus.py
-│   │   └── usage.py
-│   ├── services/                  # Feature operations and transactions
-│   │   ├── auth.py
-│   │   ├── system.py
-│   │   ├── common.py              # Audit records and timestamps
-│   │   ├── catalog.py
-│   │   ├── memory.py
-│   │   ├── rendering.py
-│   │   ├── aplus.py
-│   │   └── usage.py
-│   ├── provider.py                # Image API adapter and model capabilities
-│   ├── pricing.py                 # Versioned rates and metering calculations
-│   ├── jobs.py                    # Durable queue, leases and recovery
-│   └── submissions.py             # Transactional submission deduplication
-├── static/
-│   ├── index.html
-│   ├── css/styles.css
-│   └── js/
-│       ├── app.js                 # Composition, navigation, login and polling
-│       ├── api.js                 # HTTP errors and per-workspace request keys
-│       ├── dom.js                 # DOM lookup, escaping and toasts
-│       ├── models.js              # Model/quality selectors
-│       ├── create.js
-│       ├── catalog.js
-│       ├── jobs.js
-│       ├── gallery.js
-│       ├── memory.js
-│       ├── aplus.js
-│       └── usage.js
-├── resources/studioflow_product_template.csv
-├── tests/                         # Temporary workspaces and offline regressions
-├── deploy/                        # Production Compose and operator guide
-├── scripts/                       # Container smoke check, packaging, deployment
-├── .github/workflows/             # CI and mvserver deployment
-├── docs/
-├── Dockerfile
-├── docker-compose.yml             # Local/manual Compose
-└── requirements*.txt / requirements.lock
+app.py                         compatible Uvicorn entry point
+studioflow/
+  application.py               app factory, request maintenance gate, worker lifecycle
+  settings.py, workspace.py     explicit settings, paths, database/storage boundaries
+  api/                         request schemas, authentication, streaming responses
+  services/
+    catalog.py, memory.py       catalog facts, brand profiles, approved rules
+    rendering.py, creation.py   legacy and versioned mixed submissions, revisions
+    pipeline.py                paid receipts, masters, composition and publication
+    assets.py                  immutable reservations, transfers, provenance
+    library.py                 indexed queries, slots, export manifests and ZIP jobs
+    auth.py, aplus.py, usage.py existing team workflows and accounting
+    maintenance.py             writer gates and operational state
+  persistence/
+    schema.py                  SQLAlchemy Core schema and foreign keys
+    connection.py              pooled PostgreSQL adapter and transaction boundary
+    repository.py              stable identities, sequencing and asset references
+    alembic/                   explicit ordered schema migrations
+  operations/                  audit, import, maintenance, backup, restore, cleanup
+  jobs.py                      ordered claims, dependencies, leases, recovery
+  composition.py               versioned local layout renderer
+  provider.py, pricing.py      model capabilities, provider boundary, versioned rates
+  database.py, migrations/     legacy SQLite source and isolated preview support
+static/
+  js/create_v2.js, layout.js    mixed creation and controlled graphic copy
+  js/gallery.js                cursor pages, durable selection, downloads, local revisions
+  js/                          existing feature controllers and shared API helpers
+  css/, index.html             shipped browser UI (no application bundler)
+resources/fonts/               licensed Cinzel/Roboto files and license notices
+deploy/                        persistent infrastructure, application and operator Compose
+scripts/                       guarded release packaging, maintenance and smoke checks
+tests/                         offline, real-service, scale and browser acceptance
 ```
 
-## Backend boundaries
+## Persistence boundaries
 
-`application.create_app(settings)` constructs an app without creating directories, opening a database or starting workers. Its lifespan creates the workspace directories, initializes the database and starts a queue bound to that workspace. Shutdown drains that queue. Passing explicit settings avoids loading `.env`; omitting settings uses the normal environment configuration.
+Routers validate public requests and resolve authenticated users. Services own transactions and snapshots; identity/asset repositories sit below them. `Workspace` supplies the database and storage boundary. SQLAlchemy Core owns the schema and PostgreSQL engine; a small adapter preserves existing parameterized feature queries. It converts placeholders and quotes the legacy `user` column. Dialect-specific behaviour stays explicit.
 
-`Workspace` carries each app's settings, data paths and connection factory. Routers obtain it from `request.app.state` through `get_workspace`; authentication uses the same workspace. Tests use `create_app(settings, start_queue=False)` to inspect queued work without running it, or enable the queue for complete demo workflows. No test needs to dynamically import or patch a second copy of `app.py`.
+Stable product IDs link catalog rows, memory, rules, renders and image sets. Historical public IDs, usernames, session tokens, submission keys and usage ledger IDs survive migration. Catalog deletion archives the row. Saved SKU/ASIN identifiers prevent catalog edits from renaming existing exports. Approval events supplement retained legacy approval flags.
 
-Feature routers own Pydantic request schemas, dependencies, file responses and route declarations. Services own identity resolution, prompt composition, snapshots, persistence and transaction boundaries. Existing service validation continues to raise the same HTTP errors to preserve API behavior. Services never import the application or routers. Shared queue, provider, pricing and submission adapters remain separate from feature routes.
+Image sets snapshot inputs, model/quality/size, facts and branding. Each render stores its own immutable recipe and references. Paid attempts are counted separately from local outputs. Receipts preserve the rate card and provider request ID used at submission. Integer microdollar totals and ledger checkpoint boundaries are retained.
 
-The migration runner applies versions 1–4 in their original order and transaction. Version 2 still defers its unique index when legacy duplicate SKUs exist, preserves those records, and retries on a later startup. The refactor adds no migration version and does not rename tables, paths, columns or stored records.
+Assets have immutable keys, SHA-256 checksums, dimensions, MIME types, roles, readiness state and provenance links. `legacy_assets` maps historical URLs. New uploads retain original bytes and a normalized RGBA reference; cutouts preserve transparency. The storage adapter only exposes immutable operations. SeaweedFS services have no public host ports.
 
-## Browser boundaries
+## Processing and recovery
 
-The page loads one ES module, `static/js/app.js`. It creates one shared API client, configuration object and submission-key registry, then injects them into screen controllers. Each controller keeps its own edits, selected records and request counters inside its factory. Cross-screen actions are explicit callbacks supplied by the bootstrap.
+Submission expansion and capacity checks share a transaction with deduplication. Limits are 50 products, 12 outputs per product, 250 outputs per job, 18 MiB per upload and 100 MiB of selected references, plus the existing pending-queue cap. A product set has at most one MAIN. PT slots follow submission order; local and paid revisions inherit them and start unapproved.
 
-`api.js` retains submission keys after uncertain responses and clears them after success. `models.js` uses the backend's model capabilities. Screen code retains request snapshots, duplicate-click guards, protection against stale responses and unsaved profile/checkpoint edits. Dynamic buttons use event listeners, so they do not require global browser functions.
+Workers claim `queued` or due `transferring` rows in `enqueue_seq` order with `FOR UPDATE SKIP LOCKED`. A composition dependency must be completed first. Heartbeats run independently of render and export work. An auxiliary worker resumes upload transfers and prepares ZIPs. Stale local work or a saved response can resume; an uncertain paid call becomes a failed item requiring review.
 
-The browser serves these modules directly. `static/js/package.json` declares ES-module syntax for Node's tests; no bundler, npm dependencies or build step is needed. The frontend tests import the same modules as the browser and exercise their controls with isolated DOM and API fixtures.
+The paid boundary is: persist attempt → call once with SDK retries disabled → fsync response receipt → persist metering → save immutable master → compose/resize → transfer output and thumbnail → publish completed status. Raw masters and receipts survive output/transfer failures. A mismatched requested native resolution retains the master for review and fails publication. Later layout editing uses the master and creates no provider attempt.
 
-## Adding a feature
+Local MAIN arranges an approved single-item cutout using the confirmed pack count. Infographics apply exact copy and geometry with bundled fonts. Text that cannot fit is rejected rather than truncated. Recipes carry their version and confirmed facts. Source captions are never treated as product measurements.
 
-Add its request schema and router under `api/`, its transactions under `services/`, and register the router in `application.py`. Reuse the shared workspace/auth dependencies. Keep submission deduplication and prompt snapshots in the same transaction as new render records. Add a numbered migration only when the database actually needs a change.
+## Query and export boundaries
 
-For a new browser view, add a screen factory and bind it in `static/js/app.js`. Inject shared helpers and callbacks rather than accessing another screen's internal state. Update the HTML, then run the Python and browser suites listed in the root README. CI additionally builds the image and runs a disposable container smoke check.
+`GET /api/library` uses indexed descending `enqueue_seq` cursors and server filters. `GET /api/renders` remains a compatible bounded legacy endpoint. Original media URLs and authentication remain available.
 
-## Production state
+Selection stays in the browser across page/filter refreshes. Export preview resolves stable names and blocks case-insensitive collisions. The server freezes an authenticated manifest, checks 250-image/512-MiB limits, verifies each object checksum, and builds a ZIP one image at a time. ZIPs are temporary; restored databases regenerate unexpired exports. Individual listing downloads share the filename resolver.
 
-`/srv/studioflow` holds private runtime configuration, data, backups and release metadata on `mvserver`. It stays outside the repository and Actions checkout. The production Docker image includes only application sources and shipped resources. See [deployment and recovery](../deploy/README.md).
+## Operations and deployment
+
+All API writers enter a shared PostgreSQL maintenance gate. Backups set maintenance, acquire the exclusive gate, and drain active operations before `pg_dump`. They capture an asset manifest and pending transfer/receipt files, resume service, then stream immutable objects to Restic. An operation lock excludes import/backup/cleanup conflicts. Linked assets are retained; cleanup removes expired ZIPs, old completed staging files and verified abandoned uploads only.
+
+Production startup verifies the Alembic revision without applying it. The first migration is an explicit maintenance workflow. Regular deployment validates schema/storage/readiness before stopping the running application. An external restore proof and reconciliation marker are required for activation. Application replacement never replaces PostgreSQL or SeaweedFS volumes.
+
+Use [the deployment runbook](DOCKER_DEPLOY.md) for the exact sequence. Restore only into an empty database and bucket. Once new writes begin, recovery must preserve/reconcile them; no automated SQLite rollback exists.

@@ -20,18 +20,44 @@ ALLOWED_QUALITIES = ("low", "medium", "high", "xhigh", "max", "auto")
 MODEL_CONFIG = [
     {
         "id": DEFAULT_MODEL,
-        "label": "Flare · faster generation",
+        "label": "GPT Image 2.5 Flare · faster generation",
         "qualities": list(ALLOWED_QUALITIES),
     },
     {
         "id": REVISION_MODEL,
-        "label": "Sunburst · precision editing",
+        "label": "GPT Image 2.5 Sunburst · precision editing",
         "qualities": list(ALLOWED_QUALITIES),
     },
-    {"id": "gpt-image-2", "label": "GPT Image 2", "qualities": ["low", "medium", "high", "auto"]},
-    {"id": "gpt-image-1.5", "label": "GPT Image 1.5", "qualities": ["low", "medium", "high", "auto"]},
-    {"id": "gpt-image-1-mini", "label": "GPT Image 1 Mini · lower cost", "qualities": ["low", "medium", "high", "auto"]},
-    {"id": "chatgpt-image-latest", "label": "ChatGPT Image Latest", "qualities": ["low", "medium", "high", "auto"]},
+    {
+        "id": "gpt-image-2.6-flare",
+        "label": "GPT Image 2.6 Flare · fast iteration",
+        "qualities": list(ALLOWED_QUALITIES),
+    },
+    {
+        "id": "gpt-image-2.6-sunburst",
+        "label": "GPT Image 2.6 Sunburst · detailed visual work",
+        "qualities": list(ALLOWED_QUALITIES),
+    },
+    {
+        "id": "gpt-image-2",
+        "label": "GPT Image 2",
+        "qualities": ["low", "medium", "high", "auto"],
+    },
+    {
+        "id": "gpt-image-1.5",
+        "label": "GPT Image 1.5",
+        "qualities": ["low", "medium", "high", "auto"],
+    },
+    {
+        "id": "gpt-image-1-mini",
+        "label": "GPT Image 1 Mini · lower cost",
+        "qualities": ["low", "medium", "high", "auto"],
+    },
+    {
+        "id": "chatgpt-image-latest",
+        "label": "ChatGPT Image Latest",
+        "qualities": ["low", "medium", "high", "auto"],
+    },
 ]
 ALLOWED_MODELS = tuple(model["id"] for model in MODEL_CONFIG)
 
@@ -47,13 +73,29 @@ PRESETS = {
 
 # Per-model capabilities, rather than a model-name prefix heuristic. Existing
 # general exports retain their request sizes; A+ can request a closer aspect ratio.
+# Keep 2.6 on standard sizes until custom-size support is verified separately.
 FLEXIBLE_SIZE_MODELS = {DEFAULT_MODEL, REVISION_MODEL, "gpt-image-2"}
 
 
 def api_image_size(model, canvas, *, aplus=False):
     if aplus and model in FLEXIBLE_SIZE_MODELS:
-        return {"banner": "1536x640", "mobile": "1024x768"}.get(canvas, PRESETS[canvas][0])
+        return {"banner": "1536x640", "mobile": "1024x768"}.get(
+            canvas, PRESETS[canvas][0]
+        )
     return PRESETS[canvas][0]
+
+
+def validate_native_size(model, canvas, native_size, validated_models=()):
+    if not native_size or native_size == api_image_size(model, canvas):
+        return
+    if (
+        native_size != "2048x2048"
+        or canvas != "square"
+        or model not in FLEXIBLE_SIZE_MODELS
+    ):
+        raise ValueError("Unsupported native resolution for this model and canvas")
+    if model not in validated_models:
+        raise ValueError("Native 2K is not validated for this model in this workspace")
 
 
 def validate_settings(model: str, quality: str, canvas: str) -> None:
@@ -96,6 +138,9 @@ def render_live(
     aplus: bool = False,
     on_request: Any = None,
     on_response: Any = None,
+    native_size: str = "",
+    validated_models: Sequence[str] = (),
+    master_output: Path | None = None,
 ) -> None:
     """Edit source images and atomically write a complete, uncropped JPEG.
 
@@ -104,6 +149,7 @@ def render_live(
     for this call. GPT image models return base64 without ``response_format``.
     """
     validate_settings(model, quality, canvas)
+    validate_native_size(model, canvas, native_size, validated_models)
     if not 1 <= len(inputs) <= 16:
         raise ValueError("Image editing requires 1–16 source images")
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 32000:
@@ -126,7 +172,7 @@ def render_live(
             model=model,
             image=image_payload if len(image_payload) > 1 else image_payload[0],
             prompt=prompt,
-            size=api_image_size(model, canvas, aplus=aplus),
+            size=native_size or api_image_size(model, canvas, aplus=aplus),
             quality=quality,
             n=1,
         )
@@ -137,6 +183,11 @@ def render_live(
         if own_client:
             client.close()
 
+    write_response_image(response, output, canvas, master_output=master_output)
+
+
+def write_response_image(response, output, canvas, *, master_output=None):
+    """Process a saved response locally without issuing another paid request."""
     data = getattr(response, "data", None)
     encoded = getattr(data[0], "b64_json", None) if data else None
     if not encoded:
@@ -147,6 +198,10 @@ def render_live(
         raise RuntimeError("Image provider returned invalid base64 image data") from exc
 
     output = Path(output)
+    if master_output is not None:
+        from .services.assets import atomic_write
+
+        atomic_write(master_output, raw)
     temporary = output.with_name(f".{output.name}.{uuid.uuid4().hex}.tmp")
     try:
         with Image.open(io.BytesIO(raw)) as source:

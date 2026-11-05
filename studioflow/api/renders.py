@@ -1,6 +1,7 @@
 """HTTP routes for rendering."""
 
 from typing import Optional
+import json
 
 from fastapi import (
     APIRouter,
@@ -9,6 +10,7 @@ from fastapi import (
     Form,
     Header,
     UploadFile,
+    HTTPException,
 )
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -44,22 +46,31 @@ def render_history(
 
 @router.post("/api/generate")
 def generate(
-    files: list[UploadFile] = File(...),
-    skus: str = Form(...),
-    kind: str = Form(...),
-    scenes: str = Form(...),
+    files: list[UploadFile] | None = File(None),
+    skus: str = Form(""),
+    kind: str = Form(""),
+    scenes: str = Form(""),
+    generation_plan: str = Form(""),
     scene_sets: str = Form(""),
     model: str = Form(DEFAULT_MODEL),
-    quality: str = Form("medium"),
+    quality: str = Form("high"),
     canvas: str = Form("square"),
     aplus_profile_id: str = Form(""),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
     user: str = Depends(current_user),
     workspace: Workspace = Depends(get_workspace),
 ):
+    if generation_plan:
+        from ..services.creation import submit
+
+        try:
+            plan = json.loads(generation_plan)
+        except ValueError as exc:
+            raise HTTPException(400, "Invalid generation plan JSON") from exc
+        return submit(workspace, plan, user, idempotency_key)
     return service.generate(
         workspace,
-        files=files,
+        files=files or [],
         skus=skus,
         kind=kind,
         scenes=scenes,
@@ -105,6 +116,12 @@ def media(
     user: str = Depends(current_user),
     workspace: Workspace = Depends(get_workspace),
 ):
+    from ..services.assets import legacy_id
+    from .library import asset_response
+
+    aid = legacy_id(workspace, "outputs/" + filename)
+    if aid:
+        return asset_response(workspace, aid)
     return FileResponse(
         service.media(workspace, filename=filename, user=user),
         media_type="image/jpeg",

@@ -15,7 +15,18 @@ permissions:
 jobs:
   test-and-build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:18-bookworm@sha256:5c4783a8cc3f0074912164f94dfa1be4e043438f0f707cf968d7af9a0d31a2c8
+        env:
+          POSTGRES_USER: studioflow
+          POSTGRES_PASSWORD: disposable-ci-password
+          POSTGRES_DB: studioflow
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U studioflow -d studioflow"
+          --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
       - name: Checkout the exact revision
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -25,14 +36,14 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: '3.12'
+          python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements.lock
 
       - name: Set up Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: '24'
+          node-version: "24"
 
       - name: Install the locked dependencies
         run: python -m pip install -r requirements.lock
@@ -45,12 +56,58 @@ jobs:
       - name: Build the production image
         env:
           RELEASE_SHA: ${{ github.sha }}
-        run: docker build --label "org.opencontainers.image.revision=$RELEASE_SHA" -t "studioflow:$RELEASE_SHA" .
+        run: |
+          docker build --target runtime --label "org.opencontainers.image.revision=$RELEASE_SHA" -t "studioflow:$RELEASE_SHA" .
+          docker build --target operations --label "org.opencontainers.image.revision=$RELEASE_SHA" -t "studioflow-ops:$RELEASE_SHA" .
+
+      - name: Start private disposable SeaweedFS
+        run: |
+          docker run -d --name studioflow-ci-objects -p 127.0.0.1:8333:8333 \
+            -e AWS_ACCESS_KEY_ID=test-access -e AWS_SECRET_ACCESS_KEY=test-secret-long-enough \
+            chrislusf/seaweedfs:4.52@sha256:57877e32bb90073b37dc109b438ba66e84fd5ed9ced5f5c04f56444ef243ce59 \
+            mini -dir=/data -ip=127.0.0.1 -ip.bind=0.0.0.0 -admin.ui=false -webdav=false -s3.port.iceberg=0 -s3.port.lance=0 -master.telemetry=false
+          python scripts/wait_for_storage.py http://127.0.0.1:8333
+
+      - name: PostgreSQL, SeaweedFS, migration and encrypted restore tests
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          docker run --rm --network host --entrypoint python \
+            -v "$GITHUB_WORKSPACE:/repo:ro" -w /repo -e PYTHONPATH=/repo \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e STUDIOFLOW_TEST_DATABASE_URL=postgresql+psycopg://studioflow:disposable-ci-password@127.0.0.1:5432/studioflow \
+            -e STUDIOFLOW_TEST_S3_ENDPOINT=http://127.0.0.1:8333 \
+            -e STUDIOFLOW_RESTIC=/usr/local/bin/restic \
+            -e STUDIOFLOW_PG_DUMP=/usr/local/bin/pg_dump \
+            -e STUDIOFLOW_PG_RESTORE=/usr/local/bin/pg_restore \
+            -e STUDIOFLOW_SCALE_TEST=1 \
+            "studioflow-ops:$RELEASE_SHA" -m unittest discover -s tests -v
 
       - name: Test container startup and demo generation
         env:
           RELEASE_SHA: ${{ github.sha }}
         run: python scripts/smoke_container.py "studioflow:$RELEASE_SHA"
+
+      - name: Install pinned browser acceptance tools
+        working-directory: tests/browser
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Test mixed creation and bulk download in the browser
+        env:
+          STUDIOFLOW_TEST_DATABASE_URL: postgresql+psycopg://studioflow:disposable-ci-password@127.0.0.1:5432/studioflow
+          STUDIOFLOW_TEST_S3_ENDPOINT: http://127.0.0.1:8333
+        run: |
+          mkdir -p .tmp
+          python -m scripts.browser_server > .tmp/browser-server.log 2>&1 &
+          browser_server=$!
+          trap 'kill "$browser_server" 2>/dev/null || true; wait "$browser_server" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:18001/api/health > /dev/null; then break; fi
+            sleep 1
+          done
+          node tests/browser/acceptance.cjs
 
       - name: Package the tested image
         if: inputs.package_release
@@ -67,3 +124,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 3
+
+      - name: Remove disposable storage
+        if: always()
+        run: docker rm -f studioflow-ci-objects || true

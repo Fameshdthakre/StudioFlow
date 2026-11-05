@@ -1,0 +1,23 @@
+# Service-specific ownership: PostgreSQL owns postgres/, UID 10002 owns objects/.
+services:
+  storage-init:
+    volumes:
+      - type: bind
+        source: /srv/studioflow/objects
+        target: /objects
+        bind:
+          create_host_path: false
+  postgres:
+    volumes:
+      - type: bind
+        source: /srv/studioflow/postgres
+        target: /var/lib/postgresql
+        bind:
+          create_host_path: false
+  seaweedfs:
+    volumes:
+      - type: bind
+        source: /srv/studioflow/objects
+        target: /data
+        bind:
+          create_host_path: false

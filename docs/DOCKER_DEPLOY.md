@@ -1,88 +1,105 @@
-# StudioFlow deployment and upgrade
+# StudioFlow platform deployment and recovery
 
-The image packages the current application, `studioflow/` and `static/` only. `.env`, workspace data, tests, temporary backups and `References/` are excluded. The container runs as UID/GID `10001:10001`. Docker was unavailable in the implementation environment; build and container startup still need to be checked on the deployment host.
+This release requires PostgreSQL 18 and private SeaweedFS. SQLite is the migration source and an offline preview option. **Normal deployment never imports production data or applies schema migrations.** Its preflight must succeed before the running application is stopped.
 
-## Automatic deployment to mvserver
-
-The workflow files are prepared in the repository. They become active after they are pushed to GitHub and the following one-time host/repository settings are complete. This local setup does not change an existing GitHub runner's labels, repository secrets, or server directories.
-
-Every push to `main` runs `ci.yml` through the deployment workflow: Python tests, JavaScript tests, a Docker build and an authenticated demo-generation smoke check. Only a successful run packages its exact image and deployment inputs for `mvserver`. Pull requests run the same checks on GitHub-hosted runners and cannot enter the production deploy job. The `Run workflow` button is also supported for `main`.
-
-### One-time setup
-
-1. On `mvserver`, use a Linux x64 self-hosted runner with Python 3.10+, Docker Engine, a Docker Compose plugin supporting `up --wait`, and access to the local Docker daemon. The runner must be version **2.327.1 or newer**, as required by [download-artifact v7](https://github.com/actions/download-artifact#v7---whats-new). Add the custom runner label **`studioflow-production`** under GitHub repository **Settings → Actions → Runners → your mvserver runner**. Standard `self-hosted`, `linux` and `x64` labels must also be present.
-2. Create a GitHub environment named **`production`** under repository Settings → Environments. Limit its deployment branches to **`main`**. Required reviewers are optional; leaving them unset allows automatic deployment after CI passes.
-3. Store the complete current production `.env` content as the **secret** `PROD_ENV_FILE` in that environment (or retain an existing repository secret with that name). Do not store it in repository variables. Include the existing accounts, owners, mode, key, secure-cookie setting and intended bind address. An empty secret is allowed only after `/srv/studioflow/.env` has already been provisioned; it uses that private file. Existing GitHub repository variables are deliberately not used as a credential fallback.
-4. Create the persistent root directory once. Run the following on `mvserver` as the **same account that runs the Actions runner service**, or replace the user/group arguments with that service account:
-
-   ```sh
-   sudo install -d -m 700 -o "$(id -u)" -g "$(id -g)" /srv/studioflow
-   docker info >/dev/null
-   docker compose version
-   python3 --version
-   ```
-
-   The parent directory belongs to the runner. The deployment helper sets ownership of **only `/srv/studioflow/data` and its contents** to container UID/GID 10001, with directory mode 750 and file mode 640. It does not grant world-write access.
-
-5. Ensure sufficient disk space for the incoming Docker image, one complete data archive per deployment and, on first adoption, a second copy of the existing workspace. Allow the runner to access GitHub's artifact endpoints; these may require additional firewall allowances described in the action's documentation. Backups and old images are retained; arrange retention separately after confirming your restore requirements.
-6. Push the reviewed workflow/script changes to `main`, or merge a PR after the checks pass. Watch the first run under **Actions → Deploy StudioFlow to mvserver**. No repository push or production activation was performed by the local implementation.
-
-### What happens to the existing workspace
-
-The deploy job does **not** check source out on the production runner. It downloads the same-run artifact to the runner's temporary directory and validates checksums, revision and the image's revision label. It skips obsolete releases when a newer commit is already on `main`. Deployments share a GitHub concurrency group and a host-side file lock.
-
-Before stopping the existing app, the script checks the new Compose configuration and validates runtime settings in a one-off container that does not import the app or start workers. It discovers the existing `studioflow` container's `/app/data` bind mount and Compose project; it does not inspect or print the container's environment variables.
-
-For the first adoption, it stops the old container gracefully, archives the whole stopped workspace, copies it to **an empty** `/srv/studioflow/data`, retains the original directory, sets the container ownership and starts the tested image. A nonempty destination containing another workspace causes an error before stopping production. Named Docker volumes, unmanaged containers and remote Docker daemons require a deliberate migration instead of automatic adoption; this deployment is for the local Docker daemon on `mvserver`.
-
-Later deployments back up the permanent workspace in place, then recreate the service using the tested image. The health gate checks the new container's Docker health status and image identity. Automatic SDK or paid-job retries are not introduced. Queued jobs resume normally; an interrupted in-flight provider call may have an unknown outcome, so avoid scheduling deployments during large active batches.
-
-Runtime files are separate from source:
+## Persistent layout
 
 ```text
-/srv/studioflow/
-  .env                 private last-successful configuration
-  current.json         last successful revision, image ID and backup
-  data/                SQLite, uploads, outputs and logos
-  backups/             complete data archives and previous-container metadata
-  releases/            candidate Compose files, private config and manifests
+/srv/studioflow/              runner-owned, mode 0700, outside the Actions checkout
+  .env                       private last-successful runtime settings
+  .deploy.lock               serializes deployment and manual maintenance
+  current.json               last successful revision/image
+  postgres/                  PostgreSQL-owned cluster data
+  objects/                   SeaweedFS-owned data, UID/GID 10002
+  data/                      application staging/receipts/exports, UID/GID 10001
+  secrets/restic-password    private recovery password, readable by UID 10001
+  migration/                 frozen import source and restore-verification.json
+  backups/                   local stopped-workspace diagnostic archives
+  releases/                  tested manifests, Compose and private configuration
+  platform-releases/         explicit maintenance artifacts and configuration
 ```
 
-### Deployment failures
+The infrastructure project owns the PostgreSQL and SeaweedFS services. The application project replaces only `studioflow`. The operations project runs the daily backup scheduler. Keep all three on `STUDIOFLOW_NETWORK=studioflow-platform`. Database, S3, filer and volume ports are not published. The application defaults to host loopback port 8000; retain the existing HTTPS reverse proxy.
 
-Build, test, checksum, stale-revision and runtime-validation failures leave the current service running. If a backup fails after the old service stops, the script restarts that original service without replacing its database. If replacement or the new healthcheck fails, the job fails and retains the new data and backup for diagnosis. It does **not** automatically restore a database or restart an older image against a possibly migrated database, because accepted jobs or schema changes may already exist.
+## Required configuration
 
-Use the failed run's deploy-step output and `/srv/studioflow/backups` to diagnose. The workflow avoids dumping production container logs into GitHub and does not prune Docker images or unrelated services. Preserve failed adoption copies until you have reconciled them; a later run intentionally refuses to merge two nonempty workspaces.
+Use `.env.platform.example` as the starting point for the complete GitHub `PROD_ENV_FILE` secret in both `production` and `production-maintenance` environments. Restrict those environments to `main`. Set:
 
-The production workflow deploys `deploy/compose.production.yml`. The root `docker-compose.yml` remains available for local development and manual deployment; after adoption, do not launch that root Compose file against the old checkout's data directory, as it would create a second workspace.
+- Existing `TEAM_USERS`, `ADMIN_USERS`, API key, intended `APP_MODE` and existing A+/usage settings. Preserve the original production mode while queued jobs exist. Use `COOKIE_SECURE=1` behind HTTPS.
+- Private `POSTGRES_PASSWORD`, matching `DATABASE_URL=postgresql+psycopg://studioflow:URL_ENCODED_PASSWORD@postgres:5432/studioflow`.
+- `STUDIOFLOW_STORAGE=s3`, `S3_ENDPOINT=http://seaweedfs:8333`, bucket, region and separate private primary-storage credentials.
+- `STUDIOFLOW_NETWORK=studioflow-platform`. The isolated local example has a different network name; change it deliberately for production.
+- `RESTIC_REPOSITORY=s3:https://EXTERNAL_ENDPOINT/BUCKET/PREFIX`, `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY`, and `BACKUP_S3_REGION`. Use an external bucket distinct from primary storage.
+- Keep `STUDIOFLOW_BACKUP_HOST=studioflow` stable across deployments so retention groups do not change with temporary container hostnames. Give rehearsal backups a different repository prefix and host label from production.
+- Initially set `STUDIOFLOW_ENABLE_CREATION=0`, `STUDIOFLOW_ENABLE_COMPOSITION=0`, `STUDIOFLOW_ENABLE_EXPORTS=0`. Keep `STUDIOFLOW_VALIDATED_2K_MODELS` empty until the provider capability benchmark is approved and passes.
 
-## First deployment
+Provision a long random Restic password at `/srv/studioflow/secrets/restic-password`, owned by UID/GID 10001 with mode 0600. Retain an independent recovery copy outside mvserver. Neither the password nor API/storage keys belong in Git or chat. The password file is not included in application backups.
 
-1. Create `.env` from `.env.example` if it does not already exist. Configure `TEAM_USERS` and the desired owners. Start with `APP_MODE=demo` in a fresh workspace.
-2. Ensure `./data` is writable by the container user. On Linux, create the intended data directory and assign it to UID/GID 10001. Do not change permissions on an unrelated parent directory. Docker Desktop bind-mount permissions depend on host file sharing.
-3. Run `docker compose config --quiet` to validate the configuration without printing credentials, then `docker compose up -d --build`.
-4. Verify `docker compose ps` reports a healthy service and `http://127.0.0.1:8000/api/health` returns `{"status":"ok"}`. Sign in and complete a demo generation and review.
+The runner must retain `self-hosted`, `linux`, `x64`, `studioflow-production` labels and have Python 3, a local Docker Engine and Compose supporting `up --wait`. The release helper can prepare the top-level `/srv/studioflow` directory. Docker access is privileged; use the existing trusted production runner. The application and object-store containers run under separate service UIDs.
 
-Compose publishes only on `127.0.0.1` by default. For a team deployment, configure the intended network access and HTTPS reverse proxy, then set `COOKIE_SECURE=1`. Compose forces authentication even if local anonymous demo settings are present in `.env`. Keep `.env` and backups accessible only to trusted workspace administrators.
+## Isolated rehearsal
 
-Live mode requires an API key, account access to the selected model, and billing configured with the provider. Check the new workflow in an isolated demo workspace before enabling live use. The local balance estimate is advisory and does not stop jobs at a spending limit.
+1. Run the local stack from the root README on port 8001 with its own named volumes and network. Do not overwrite `.env`, `data/`, or the original source checkout. `docker build` must select `--target runtime` for the application or `--target operations` for operator tooling.
+2. Obtain a stopped or drained **copy** of the real workspace, including uploads, outputs and logos. Use the snapshot command below; copying only a live `.sqlite3` file omits committed WAL data. Audit reports missing images, identifier conflicts, relationships, accounting totals and an estimated staging requirement. The estimate excludes ongoing growth, extra copies and external repository capacity; provision those separately.
 
-## Upgrade an existing workspace
+   ```sh
+   python -m studioflow.operations.cli audit --source /path/to/legacy-copy
+   python -m studioflow.operations.cli snapshot --source /path/to/stopped-copy --target .migration/rehearsal
+   docker compose --env-file .env.platform -p studioflow-local run --rm ops import --source /migration/rehearsal
+   ```
 
-1. Stop new submissions and let active requests finish. Stop the service gracefully (`docker compose stop` for Compose); all application workers must be stopped before an offline data copy. The configured grace period is 240 seconds. Interrupted provider calls are not automatically retried after restart.
-2. Back up the deployed source/image version, `.env` separately, and the complete data directory, including SQLite WAL/SHM files if present, uploads, outputs and `brand_logos`. Copy a stopped workspace or use SQLite's backup API for the database; copying only a live `.sqlite3` file is not a consistent backup.
-3. Retain the current data directory and existing credentials. Deploy the updated current-app source. Do not copy `References/New StudioFlow` over the app and do not import its database.
-4. Run the regression commands in `README.md` and rehearse startup migrations on a copy of the database. Start with `STUDIOFLOW_ENABLE_APLUS=0` and `STUDIOFLOW_ENABLE_USAGE=0` if a staged rollout is preferred.
-5. Rebuild/restart the service. Startup applies additive migrations 3 and 4 in a transaction. Existing catalog, memory, sessions, idempotency records and jobs are retained. Accepted queued work resumes using the configured mode, so never change a live workspace to demo as a migration test.
-6. Verify health, sign-in, catalog entries, product memory, the existing image library and job statuses. Enable the new flags and restart when ready. In a separate demo workspace, save an A+ profile and generate both output sizes. Refresh the browser after the deployment to load the new scripts.
-7. Before the first live batch, verify access to the selected model and the actual OpenAI account balance. Use a deliberately small, approved live request to check the provider integration and metering on that account.
+3. The importer is resumable for the exact same frozen source. Different source hashes, a populated target, unresolved references or inadequate space block import. It preserves public IDs, users, sessions, catalog/memory, approvals, history, submission keys, queue ordering and usage totals. Every referenced image is checksum-verified; historical thumbnails are generated locally. Historical listing slots remain unassigned. Interrupted paid work is held for review.
+4. Imported work remains in maintenance. Verify the report before allowing any processing. A disposable UI rehearsal can use `ops resume --local-test`, but its copied queue will then run in that stack's configured mode. Never reuse those rehearsal volumes as the final production target.
+5. Run an external backup and fresh-stack restore as described below. Review one real product's quality separately, with authorization for the paid request. Check shape, colour, fine detail, scale, pack count, lighting, exact text and mobile readability. Start with one lifestyle request and derive MAIN/dimensions locally if an approved cutout exists. Retain measured API size and cost; only then set the validated model list.
 
-The integration backup created on this workstation is `.tmp/before-v13-20261102-085430/`: `source.zip`, `manifest.json`, a consistent `studio.sqlite3` backup and `assets.zip`. It excludes `.env`. A rehearsal ran both migrations twice against a copy; `.tmp/migration-verification.json` records unchanged original rows and successful integrity checks. The live data directory was not migrated by that rehearsal.
+## External backup and restore rehearsal
 
-## Rollback and recovery
+The `ops` service mounts a secrets directory. Put `restic-password` inside `.secrets/` locally, or the production path above. The following local commands use `.env.platform` with real external backup configuration. Repository initialization is explicit and refuses an existing repository:
 
-For an issue confined to a new screen, disable its feature flag and restart the updated app. This retains all new records and keeps accepted jobs supported. A+ disablement does not cancel jobs; usage dashboard disablement does not stop metering.
+```sh
+docker compose --env-file .env.platform -p studioflow-local run --rm ops backup-init
+docker compose --env-file .env.platform -p studioflow-local run --rm ops backup
+```
 
-Prefer fixing forward if new production work has been saved. A full rollback requires stopping all workers and restoring the matching source and complete data backup together. Restoring the pre-upgrade data discards work created after that backup, so first preserve the current workspace and obtain the owner's decision about that data. Do not run old code against a queue containing A+ jobs or assume a schema downgrade is supported. Old code also cannot record the new usage receipts.
+Keep the completed `snapshot_id` from the backup response. A failed producer stream does not count as a successful snapshot. Backup resumes writers only if they were not already in maintenance. If capture/draining fails, maintenance stays enabled for investigation. Check owner-only `GET /api/operations`, scheduler logs and the external repository; an RPO of one day is a target that requires successful backups.
 
-For failed or interrupted generations, review the render error and OpenAI Billing before explicitly submitting another request. A missing response cannot prove that the provider performed no work. Known receipts remain available even if a later image export failed; unknown costs are retained for reconciliation.
+For restore, create a separate `.env.restore` with new primary database credentials, bucket and network, `STUDIOFLOW_ENV_FILE=.env.restore`, `STUDIOFLOW_NETWORK=studioflow-restore-platform`, and `STUDIOFLOW_PORT=8002`. Retain the original external Restic configuration/password. Use a new Compose project:
+
+```sh
+docker compose --env-file .env.restore -p studioflow-restore up -d --wait postgres seaweedfs
+docker compose --env-file .env.restore -p studioflow-restore run --rm ops restore --snapshot-id COMPLETED_SNAPSHOT_ID > .tmp/restore-verification.json
+```
+
+**Do not run `ops init` in the restore target.** Restore requires an empty PostgreSQL database; it creates a missing private bucket and refuses a nonempty bucket/staging area. It verifies the database dump, every object checksum, pending transfers, record counts and accounting totals, then leaves maintenance on. Images stream through bounded temporary files; a second full object store is not staged locally. The target is disposable if a restore fails part-way; preserve diagnostics and use another empty target rather than merging incomplete results.
+
+Validate login, catalog/history, images and queue recovery on the restored stack before production activation. `ops resume --local-test` is for that isolated validation only. The proof JSON contains the restored source hash and verification details; keep it from the successful restore. `--local-test` Restic repositories produce a proof that **cannot** activate production.
+
+## First production switch
+
+The `Explicit StudioFlow platform maintenance` workflow accepts `prepare`, `migrate`, `backup`, `activate`, `resume`, and `status`. Each run builds/tests the exact `main` revision, downloads the verified bundle without checkout on mvserver, and takes the shared deployment lock. Plan a maintenance window for the final backup/import/restore cycle. Use the same tested revision and configuration throughout; a step already staged with different settings intentionally refuses reuse.
+
+1. **Prepare:** run action `prepare`. It creates service-owned directories, starts persistent infrastructure and initializes an empty PostgreSQL schema/bucket. It leaves the original application running. Provision the recovery password and initialize the external Restic repository once using the staged operations Compose file. For example, after selecting the actual staged directory:
+
+   ```sh
+   export STUDIOFLOW_ENV_FILE=/srv/studioflow/platform-releases/REVISION-prepare/runtime.env
+   export STUDIOFLOW_OPS_IMAGE=studioflow-ops:REVISION
+   docker compose --env-file "$STUDIOFLOW_ENV_FILE" -p studioflow-operations -f /srv/studioflow/platform-releases/REVISION-prepare/operations.yml run --rm ops backup-init
+   ```
+
+2. **Migrate:** during the agreed window, stop new submissions and let active provider requests finish, then run action `migrate`. It identifies the original container's data bind mount, stops that container, freezes the final workspace under `migration/final-REVISION`, imports and reconciles it. The original directory stays intact. Migration failures leave service stopped for investigation. A resumed original service invalidates reuse of that final snapshot.
+3. **Backup:** run action `backup` against the final imported state. Restore that completed external snapshot into a fresh, isolated stack using the procedure above. Verify it and copy its proof to `/srv/studioflow/migration/restore-verification.json`, readable by UID 10001. A proof from an earlier source copy cannot activate a different final source hash.
+4. **Activate:** run action `activate`. It checks schema/storage, reconciliation and the external restore proof. It records readiness while leaving writes paused.
+5. **Resume:** run action `resume`. It executes the normal guarded deployment of the tested application, verifies container health and image identity, starts the backup scheduler, then explicitly reopens writes. Check login, catalog, library, original media URLs, approvals, revisions, A+, usage totals and queue state.
+6. Enable `STUDIOFLOW_ENABLE_EXPORTS`, then `STUDIOFLOW_ENABLE_CREATION`, then `STUDIOFLOW_ENABLE_COMPOSITION` through configuration and tested deployments. Observe health, pending transfers, unknown attempts, costs and representative outputs after each stage. Keep native 2K gated until its paid validation succeeds.
+
+An existing named-volume/unmanaged legacy container is not automatically adopted; map a frozen source explicitly and rehearse its import before cutover. For a truly fresh installation, use an empty stack, external backup/restore, activation and normal deployment without the legacy-import step.
+
+## Subsequent pushes and failure behaviour
+
+CI checks Python/JavaScript, PostgreSQL/SeaweedFS integration, encrypted restoration, 100,000-record pagination, browser acceptance and container startup. It packages both runtime and operations images with a checksum manifest. mvserver validates the bundle, current-main revision, settings, schema, storage and activation marker **before stopping** the running application. It also requires a completed external backup before replacement.
+
+Normal deployment changes neither infrastructure nor schema. It replaces the application only, waits for its health check, verifies image identity and updates the backup scheduler. There is no automatic downgrade or database restoration if replacement fails. Local staging archives are diagnostic backups, not substitutes for the external database/object backup.
+
+Keep application configuration, external backup access and the recovery password recoverable independently. The daily scheduler runs at 03:00 Asia/Kolkata and catches up a missed scheduled backup on restart. Retention is seven daily, four weekly and three monthly snapshots. Cleanup is suspended during backups; linked assets and uncertain receipts are retained. Expired ZIPs and verified abandoned uploads are eligible for cleanup.
+
+After any new production write, **never restore the old SQLite snapshot automatically**. Preserve current database/object state and reconcile new jobs, receipts, approvals and uploads before recovery. A failed paid request without a saved response may already have been charged; review it before explicitly creating another request.

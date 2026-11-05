@@ -62,7 +62,7 @@ export function createStudioApp(environment = globalThis) {
 
   async function loadConfig() {
     Object.assign(config, await client.request('/api/config'));
-    syncModelChoices('model', 'quality', 'gpt-image-2.5-flare', 'medium');
+    syncModelChoices('model', 'quality', 'gpt-image-2.5-flare', 'high');
     syncModelChoices('revision-model', 'revision-quality', 'gpt-image-2.5-sunburst', 'high');
     syncModelChoices('aplus-model', 'aplus-quality', 'gpt-image-2.5-sunburst', 'high');
     for (const feature of ['aplus', 'usage'])
