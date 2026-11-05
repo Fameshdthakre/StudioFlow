@@ -37,6 +37,18 @@ Provision a long random Restic password at `/srv/studioflow/secrets/restic-passw
 
 The runner must retain `self-hosted`, `linux`, `x64`, `studioflow-production` labels and have Python 3, a local Docker Engine and Compose supporting `up --wait`. The release helper can prepare the top-level `/srv/studioflow` directory. Docker access is privileged; use the existing trusted production runner. The application and object-store containers run under separate service UIDs.
 
+## Missing platform network on the first push
+
+`network studioflow-platform declared as external, but could not be found` means the application's shared infrastructure network is absent on that Docker host. A normal push replaces an already prepared application; it does not provision PostgreSQL/SeaweedFS or perform the first migration.
+
+1. Configure the complete platform `PROD_ENV_FILE` in both GitHub environments, **production** and **production-maintenance**, using matching database/storage settings and `STUDIOFLOW_NETWORK=studioflow-platform`. The local example uses `studioflow-local-platform`; do not mix that name into production by accident.
+2. In GitHub **Actions**, select **Explicit StudioFlow platform maintenance**, choose **Run workflow**, select **main**, and choose **action: prepare**. This creates the network and persistent PostgreSQL/SeaweedFS services while leaving the existing application running.
+3. Follow **First production switch** below to finish migration, external backup/restore verification, activation and resume. If the stack was already activated and only its infrastructure was stopped or removed, investigate that change and recover it before rerunning normal deployment.
+
+Creating an empty bridge with `docker network create` alone does not provide the database/object storage or satisfy the cutover checks. The infrastructure Compose project owns this network. Retrying the same deployment before preparing the stack cannot complete it.
+
+Runtime settings are now validated in a read-only container with `--network none`, using Compose's resolved environment over standard input. Configuration checks need no production volume or platform network and do not print credentials. Deployment then checks the exact network name resolved by Compose before starting preflight, backup or replacement containers; a missing network reports the maintenance action explicitly. Non-prepare maintenance actions perform the same check.
+
 ## Isolated rehearsal
 
 1. Run the local stack from the root README on port 8001 with its own named volumes and network. Do not overwrite `.env`, `data/`, or the original source checkout. `docker build` must select `--target runtime` for the application or `--target operations` for operator tooling.

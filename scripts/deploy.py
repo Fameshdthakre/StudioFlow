@@ -39,6 +39,16 @@ for directory,dirs,files in os.walk('/workspace',followlinks=False):
             os.chmod(path,mode,follow_symlinks=False)
 """
 
+VALIDATE_RUNTIME = """import json,os,sys
+from pathlib import Path
+from studioflow.settings import Settings
+os.environ.update(json.load(sys.stdin))
+settings=Settings.load(Path('/app'))
+if sys.argv[1]=='platform' and (not settings.database_url or settings.storage_backend!='s3'):
+    sys.exit('Platform configuration is incomplete: set DATABASE_URL and STUDIOFLOW_STORAGE=s3 in PROD_ENV_FILE for both production and production-maintenance, then run the Explicit StudioFlow platform maintenance workflow with action=prepare on main. See docs/DOCKER_DEPLOY.md.')
+print('Runtime settings validated')
+"""
+
 
 # Operate through directory descriptors so symlinks cannot redirect changes.
 PREPARE_STATE = """import os,sys
@@ -287,14 +297,14 @@ class Docker:
             *args, "--entrypoint", "python", self.image, "-c", code, stdout=stdout
         )
 
-    def compose(self, release, data, project, *args):
+    def compose(self, release, data, project, *args, **kwargs):
         env = dict(
             os.environ,
             STUDIOFLOW_IMAGE=self.image,
             STUDIOFLOW_DATA_PATH=str(data),
             STUDIOFLOW_ENV_FILE=str(release / "runtime.env"),
         )
-        self.command(
+        return self.command(
             "compose",
             "--project-name",
             project,
@@ -304,7 +314,53 @@ class Docker:
             release / "compose.yml",
             *args,
             env=env,
+            **kwargs,
         )
+
+    def validate_runtime(self, configuration, *, platform=False, service="studioflow"):
+        # Compose resolves quoting/interpolation and service overrides. Send only
+        # the resolved environment over stdin; never log secrets or put them in
+        # command arguments, and do not depend on a network or production volume.
+        environment = configuration["services"][service].get("environment", {})
+        self.command(
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--read-only",
+            "--interactive",
+            "--entrypoint",
+            "python",
+            self.image,
+            "-c",
+            VALIDATE_RUNTIME,
+            "platform" if platform else "legacy",
+            input=json.dumps(
+                {k: str(v) for k, v in environment.items() if v is not None}
+            ),
+            text=True,
+        )
+
+    def require_platform_network(self, configuration):
+        network = configuration.get("networks", {}).get("platform", {})
+        name = network.get("name")
+        if not network.get("external") or not isinstance(name, str) or not name:
+            raise ValueError(
+                "The platform Compose file must declare a named external network"
+            )
+        available = self.command(
+            "network", "ls", "--format", "{{.Name}}", capture_output=True, text=True
+        ).stdout.splitlines()
+        if name not in available:
+            raise RuntimeError(
+                f"Required Docker network {name!r} is missing. "
+                "Run GitHub Actions > Explicit StudioFlow platform maintenance > "
+                "Run workflow on main with action=prepare. Use the same complete "
+                "PROD_ENV_FILE and STUDIOFLOW_NETWORK in production and production-maintenance. "
+                "Prepare starts PostgreSQL/SeaweedFS and creates their shared network without "
+                "stopping the existing app. Complete migration, external restore verification, "
+                "activation and resume before normal deployment. See docs/DOCKER_DEPLOY.md."
+            )
 
     def stop(self):
         self.command("stop", "--time", "240", "studioflow")
@@ -371,22 +427,24 @@ def deploy(bundle, state, revision, runtime_env, docker, check_head=lambda: True
     if (bundle / "operations.yml").is_file():
         shutil.copyfile(bundle / "operations.yml", release / "operations.yml")
     docker.load(bundle, revision)
-    docker.compose(release, data, project, "config", "--quiet")
+    configuration = json.loads(
+        docker.compose(
+            release,
+            data,
+            project,
+            "config",
+            "--format",
+            "json",
+            capture_output=True,
+            text=True,
+        ).stdout
+    )
     # Validate credentials/settings without importing app.py, starting workers,
     # applying migrations, or making any provider call.
-    docker.compose(
-        release,
-        data,
-        project,
-        "run",
-        "--rm",
-        "--no-deps",
-        "--entrypoint",
-        "python",
-        "studioflow",
-        "-c",
-        "from pathlib import Path; from studioflow.settings import Settings; Settings.load(Path('/app')); print('Runtime settings validated')",
-    )
+    platform = manifest.get("format") == 2
+    docker.validate_runtime(configuration, platform=platform)
+    if platform:
+        docker.require_platform_network(configuration)
     # This must run before docker.stop(): the SQLite service continues running
     # until the explicit platform migration and external restore are verified.
     docker.compose(
