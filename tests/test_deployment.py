@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -12,18 +13,21 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from scripts import deploy as deployment
+from scripts import maintenance as platform_maintenance
 
 
 REVISION = "a" * 40
 RUNTIME_ENV = "APP_MODE=demo\nTEAM_USERS=offline:local-test-password\n"
 
 
-class FakeDocker:
+class FakeDocker(deployment.Docker):
     image = "studioflow:" + REVISION
 
     def __init__(self, source, failure=None):
         self.events = []
         self.failure = failure
+        self.network = "studioflow-platform"
+        self.available_networks = [self.network]
         self.container = {
             "status": "running",
             "image": "old-image",
@@ -39,10 +43,30 @@ class FakeDocker:
     def load(self, *args):
         self.events.append("load")
 
-    def compose(self, release, data, project, *args):
+    def compose(self, release, data, project, *args, **kwargs):
         self.events.append(args[0])
         if args[0] == self.failure:
             raise RuntimeError("Simulated " + self.failure + " failure")
+        if args[0] == "config":
+            return SimpleNamespace(
+                stdout=json.dumps(
+                    {
+                        "services": {
+                            "studioflow": {
+                                "environment": {
+                                    "APP_MODE": "demo",
+                                    "TEAM_USERS": "offline:local-test-password",
+                                    "STUDIOFLOW_LOAD_DOTENV": "0",
+                                    "STUDIOFLOW_REQUIRE_AUTH": "1",
+                                }
+                            }
+                        },
+                        "networks": {
+                            "platform": {"name": self.network, "external": True}
+                        },
+                    }
+                )
+            )
         if args[0] == "up":
             self.container = {
                 **self.container,
@@ -53,6 +77,13 @@ class FakeDocker:
             }
 
     def command(self, *args, **kwargs):
+        if args[:2] == ("network", "ls"):
+            self.events.append("network-check")
+            return SimpleNamespace(stdout="\n".join(self.available_networks))
+        if args[0] == "run" and deployment.VALIDATE_RUNTIME in args:
+            self.events.append("validate-settings")
+            if self.failure == "run":
+                raise RuntimeError("Simulated settings validation failure")
         return SimpleNamespace(stdout="new-image\n")
 
     def stop(self):
@@ -309,6 +340,146 @@ class DeploymentTests(unittest.TestCase):
             (self.source / "studio.sqlite3").read_bytes(), b"existing database"
         )
 
+    def test_missing_platform_network_reports_prepare_before_starting_any_compose_service(
+        self,
+    ):
+        self.platform_bundle()
+        docker = PlatformDocker(self.source)
+        docker.available_networks = ["bridge", "host", "none"]
+        with self.assertRaisesRegex(RuntimeError, "action=prepare") as failure:
+            self.run_deploy(docker)
+        self.assertIn("studioflow-platform", str(failure.exception))
+        self.assertIn("production-maintenance", str(failure.exception))
+        self.assertEqual(
+            docker.events, ["load", "config", "validate-settings", "network-check"]
+        )
+        self.assertEqual(
+            (self.source / "studio.sqlite3").read_bytes(), b"existing database"
+        )
+        self.assertFalse((self.state / "current.json").exists())
+
+    def test_custom_platform_network_uses_resolved_compose_name(self):
+        self.platform_bundle()
+        docker = PlatformDocker(self.source)
+        docker.network = "studioflow-custom-production"
+        docker.available_networks = [docker.network]
+        self.run_deploy(docker)
+        self.assertLess(
+            docker.events.index("validate-settings"),
+            docker.events.index("network-check"),
+        )
+        self.assertLess(
+            docker.events.index("network-check"), docker.events.index("preflight")
+        )
+        self.assertLess(docker.events.index("preflight"), docker.events.index("stop"))
+
+    def maintenance_action(self, action, docker):
+        self.platform_bundle()
+        with (
+            patch.object(sys, "platform", "linux"),
+            patch.dict(
+                sys.modules,
+                {"fcntl": SimpleNamespace(flock=Mock(), LOCK_EX=1, LOCK_NB=2)},
+            ),
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "maintenance",
+                    "--bundle",
+                    str(self.bundle),
+                    "--revision",
+                    REVISION,
+                    "--action",
+                    action,
+                ],
+            ),
+            patch.dict(os.environ, {"PROD_ENV_FILE": RUNTIME_ENV}),
+            patch.object(platform_maintenance, "Docker", return_value=docker),
+            patch.object(
+                platform_maintenance, "prepare_state_dir", return_value=self.state
+            ),
+            patch.object(platform_maintenance.os, "umask"),
+        ):
+            platform_maintenance.main()
+
+    def test_explicit_prepare_can_create_infrastructure_without_an_existing_network(
+        self,
+    ):
+        docker = Mock(spec=deployment.Docker)
+        docker.command.return_value = SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    "services": {"ops": {"environment": {}}},
+                    "networks": {
+                        "platform": {"name": "studioflow-platform", "external": True}
+                    },
+                }
+            )
+        )
+        self.maintenance_action("prepare", docker)
+        docker.validate_runtime.assert_called_once()
+        docker.require_platform_network.assert_not_called()
+        docker.helper.assert_called_once()
+        commands = [call.args for call in docker.command.call_args_list]
+        self.assertTrue(
+            any(
+                "studioflow-infrastructure" in args and "up" in args
+                for args in commands
+            )
+        )
+        self.assertTrue(any(args[-2:] == ("ops", "init") for args in commands))
+        docker.stop.assert_not_called()
+
+    def test_prepare_with_invalid_settings_cannot_start_infrastructure_or_stop_app(
+        self,
+    ):
+        docker = Mock(spec=deployment.Docker)
+        docker.command.return_value = SimpleNamespace(
+            stdout='{"services":{"ops":{"environment":{}}}}'
+        )
+        docker.validate_runtime.side_effect = RuntimeError(
+            "Incomplete platform settings"
+        )
+        with self.assertRaisesRegex(RuntimeError, "Incomplete platform settings"):
+            self.maintenance_action("prepare", docker)
+        docker.helper.assert_not_called()
+        self.assertEqual(docker.command.call_count, 1)  # Only Compose configuration.
+        docker.stop.assert_not_called()
+
+    def test_maintenance_backup_missing_network_reports_setup_before_launching_ops(
+        self,
+    ):
+        docker = Mock(spec=deployment.Docker)
+        docker.command.return_value = SimpleNamespace(
+            stdout='{"services":{"ops":{"environment":{}}}}'
+        )
+        docker.require_platform_network.side_effect = RuntimeError(
+            "Network missing; action=prepare"
+        )
+        with self.assertRaisesRegex(RuntimeError, "action=prepare"):
+            self.maintenance_action("backup", docker)
+        self.assertEqual(docker.command.call_count, 1)
+        docker.helper.assert_not_called()
+        docker.stop.assert_not_called()
+
+    def test_network_daemon_failure_cannot_stop_or_replace_running_app(self):
+        self.platform_bundle()
+        docker = PlatformDocker(self.source)
+        command = docker.command
+
+        def unavailable(*args, **kwargs):
+            if args[:2] == ("network", "ls"):
+                raise subprocess.CalledProcessError(1, ["docker", "network", "ls"])
+            return command(*args, **kwargs)
+
+        docker.command = unavailable
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_deploy(docker)
+        self.assertNotIn("stop", docker.events)
+        self.assertNotIn("run", docker.events)
+        self.assertNotIn("up", docker.events)
+
     def test_platform_external_backup_failure_leaves_the_running_service_in_place(self):
         self.platform_bundle()
         docker = PlatformDocker(self.source, failure="external-backup")
@@ -341,12 +512,12 @@ class DeploymentTests(unittest.TestCase):
 
 
 class PlatformDocker(FakeDocker):
-    def compose(self, release, data, project, *args):
+    def compose(self, release, data, project, *args, **kwargs):
         if "preflight" in args:
             self.events.append("preflight")
             if self.failure == "preflight":
                 raise RuntimeError("Simulated preflight failure")
-        return super().compose(release, data, project, *args)
+        return super().compose(release, data, project, *args, **kwargs)
 
     def command(self, *args, **kwargs):
         if "backup" in args:
@@ -356,6 +527,104 @@ class PlatformDocker(FakeDocker):
         if "backups" in args:
             self.events.append("backup-service")
         return super().command(*args, **kwargs)
+
+
+class RuntimeValidationTests(unittest.TestCase):
+    def test_settings_check_needs_no_platform_network_and_preserves_resolved_secret_values(
+        self,
+    ):
+        docker = deployment.Docker("studioflow:" + REVISION)
+        environment = {
+            "TEAM_USERS": 'owner:quoted "$private" password',
+            "STUDIOFLOW_LOAD_DOTENV": "0",
+            "STUDIOFLOW_REQUIRE_AUTH": "1",
+            "S3_SECRET_ACCESS_KEY": "a-secret-not-for-logs",
+            "UNSET": None,
+        }
+        config = {"services": {"studioflow": {"environment": environment}}}
+        with patch.object(docker, "command") as command:
+            docker.validate_runtime(config, platform=True)
+        args, kwargs = command.call_args
+        self.assertEqual(
+            args[:7],
+            (
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--read-only",
+                "--interactive",
+                "--entrypoint",
+            ),
+        )
+        self.assertNotIn("--mount", args)
+        self.assertNotIn("compose", args)
+        self.assertNotIn("a-secret-not-for-logs", str(args))
+        self.assertEqual(
+            json.loads(kwargs["input"]),
+            {k: v for k, v in environment.items() if v is not None},
+        )
+        self.assertEqual(args[-1], "platform")
+
+    def test_maintenance_settings_check_uses_the_operations_service(self):
+        docker = deployment.Docker("studioflow:" + REVISION)
+        config = {"services": {"ops": {"environment": {"APP_MODE": "demo"}}}}
+        with patch.object(docker, "command") as command:
+            docker.validate_runtime(config, platform=True, service="ops")
+        self.assertEqual(
+            json.loads(command.call_args.kwargs["input"]), {"APP_MODE": "demo"}
+        )
+
+    def test_platform_settings_reject_legacy_configuration_without_initializing_any_data(
+        self,
+    ):
+        from studioflow.settings import Settings
+        import io
+
+        for complete in (False, True):
+            environment = {
+                "APP_MODE": "demo",
+                "TEAM_USERS": "owner:test-password",
+                "STUDIOFLOW_LOAD_DOTENV": "0",
+                "STUDIOFLOW_REQUIRE_AUTH": "1",
+            }
+            if complete:
+                environment.update(
+                    DATABASE_URL="postgresql+psycopg://test:test@postgres:5432/studioflow",
+                    STUDIOFLOW_STORAGE="s3",
+                    S3_ENDPOINT="http://seaweedfs:8333",
+                    S3_ACCESS_KEY_ID="test-key",
+                    S3_SECRET_ACCESS_KEY="test-secret",
+                )
+            with (
+                self.subTest(complete=complete),
+                patch.dict(os.environ, {}, clear=True),
+                patch.object(sys, "stdin", io.StringIO(json.dumps(environment))),
+                patch.object(sys, "argv", ["-c", "platform"]),
+                patch.object(Settings, "load", wraps=Settings.load) as load,
+                patch("builtins.print"),
+                patch.object(
+                    Path,
+                    "mkdir",
+                    side_effect=AssertionError("Settings check must not write data"),
+                ),
+            ):
+                if complete:
+                    exec(
+                        compile(deployment.VALIDATE_RUNTIME, "<runtime-check>", "exec"),
+                        {},
+                    )
+                else:
+                    with self.assertRaisesRegex(
+                        SystemExit, "DATABASE_URL.*action=prepare"
+                    ):
+                        exec(
+                            compile(
+                                deployment.VALIDATE_RUNTIME, "<runtime-check>", "exec"
+                            ),
+                            {},
+                        )
+                load.assert_called_once()
 
 
 @unittest.skipUnless(os.name == "posix", "Linux directory-descriptor checks run in CI")

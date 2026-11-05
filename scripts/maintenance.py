@@ -1,6 +1,7 @@
 """Explicit first cutover on mvserver; normal push deployment cannot perform migration."""
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -75,6 +76,26 @@ def main():
             STUDIOFLOW_OPS_IMAGE="studioflow-ops:" + args.revision,
             STUDIOFLOW_ENV_FILE=str(env_file),
         )
+        configuration = json.loads(
+            docker.command(
+                "compose",
+                "--project-name",
+                "studioflow-operations",
+                "--env-file",
+                env_file,
+                "-f",
+                release / "operations.yml",
+                "config",
+                "--format",
+                "json",
+                env=env,
+                capture_output=True,
+                text=True,
+            ).stdout
+        )
+        docker.validate_runtime(configuration, platform=True, service="ops")
+        if args.action != "prepare":
+            docker.require_platform_network(configuration)
 
         def ops(*commands):
             docker.command(

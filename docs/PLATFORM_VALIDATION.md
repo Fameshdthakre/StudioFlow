@@ -36,6 +36,8 @@ Reproducible test commands and environment variables are in the [root README](..
 
 ## Required before production activation
 
+Deployment bootstrap follow-up (2026-11-05): runtime settings validation now runs with no network or production data mount, receives Compose-resolved environment values over stdin, and leaves credentials out of command arguments. Normal deployment and non-prepare maintenance check the resolved external network before starting platform containers. Missing infrastructure reports the explicit `prepare` workflow action. The deployment suite ran **33 tests: 29 passed, four Linux-only checks skipped**; it covers missing/custom networks, Docker access failures, incomplete platform settings and preparation without an existing network. The installed Compose CLI validated matching app/operations/infrastructure network names without creating resources. Formatting, lint, compilation and whitespace checks passed. The actual mvserver setup and deployment were not run from this workstation.
+
 1. Green CI on the final committed revision, including Linux Docker builds, real-service integration, browser acceptance and container smoke checks.
 2. A frozen copy of mvserver data; audit, capacity review and migration rehearsal with all conflicts resolved.
 3. External S3 configuration and independently retained Restic recovery password, followed by a verified restore of the final imported state into an empty stack.
